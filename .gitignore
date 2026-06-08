@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.pdf
+*.xlsx
+.DS_Store
+.vscode/
+.venv/
+Lab-Andressouz/
+Leitor de Notas Ficais.zip
