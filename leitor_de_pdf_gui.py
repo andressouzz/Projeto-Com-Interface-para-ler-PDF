@@ -5,6 +5,7 @@ Leitor de Notas Ficais de Hardware
 """
 
 import os
+import re
 import sys
 import difflib
 import threading
@@ -24,16 +25,26 @@ from leitor_de_pdf import LeitordePDF
 
 
 class CruzamentoDados:
-    """Cruzamento de dados aproximado (fuzzy matching) entre planilhas."""
+    """Cruzamento entre planilha gerada e aba Base do SDLAN CEF."""
 
-    COLUNAS_ALVO = ['CGC', 'CIAUS', 'Field Responsável']
+    PESOS = {'endereco': 30, 'cidade': 30, 'cep': 40}
 
-    # Padrões para identificar colunas de endereço na planilha de cruzamento
-    PADROES_ENDERECO = {
+    COLUNAS_BASE = {
         'endereco': ['endereço', 'endereco', 'logradouro', 'end'],
-        'bairro': ['bairro', 'bairro/distrito'],
         'cidade': ['cidade', 'município', 'municipio'],
         'cep': ['cep', 'postal', 'zip'],
+        'cgc_unidade': ['cgc unidade', 'cgc da unidade', 'cgc unid'],
+        'ciaus': ['ciaus'],
+        'field': ['field responsável', 'field'],
+    }
+
+    COLUNAS_GERADO = {
+        'endereco': 'endereço de instalação',
+        'cidade': 'cidade',
+        'cep': 'cep',
+        'cgc': 'cgc',
+        'ciaus': 'ciaus',
+        'field': 'field responsável',
     }
 
     @staticmethod
@@ -41,6 +52,12 @@ class CruzamentoDados:
         if not texto:
             return ""
         return re.sub(r'\s+', ' ', str(texto).lower().strip())
+
+    @staticmethod
+    def _normalizar_cep(texto):
+        if not texto:
+            return ""
+        return re.sub(r'\D', '', str(texto))
 
     @staticmethod
     def _encontrar_coluna(headers, padroes):
@@ -52,158 +69,152 @@ class CruzamentoDados:
         return None
 
     @classmethod
-    def _mapear_colunas_cruzamento(cls, headers):
+    def _mapear_colunas_base(cls, headers):
         mapeamento = {}
-        for campo, padroes in cls.PADROES_ENDERECO.items():
+        for campo, padroes in cls.COLUNAS_BASE.items():
             idx = cls._encontrar_coluna(headers, padroes)
             if idx is not None:
                 mapeamento[campo] = idx
-        for alvo in cls.COLUNAS_ALVO:
-            idx = cls._encontrar_coluna(headers, [alvo.lower()])
-            if idx is not None:
-                mapeamento[alvo] = idx
+        return mapeamento
+
+    @classmethod
+    def _mapear_colunas_gerado(cls, headers):
+        mapeamento = {}
+        for campo, nome_busca in cls.COLUNAS_GERADO.items():
+            for i, h in enumerate(headers):
+                if h and nome_busca in str(h).lower().strip():
+                    mapeamento[campo] = i
+                    break
         return mapeamento
 
     @staticmethod
-    def _criar_chave(endereco, bairro, cidade, cep):
-        partes = [
-            str(endereco or ""),
-            str(bairro or ""),
-            str(cidade or ""),
-            str(cep or ""),
-        ]
-        return re.sub(r'\s+', ' ', ' '.join(partes).lower().strip())
+    def _score_match(linha, ref, pesos):
+        score = 0.0
+        total_peso = 0.0
+        for campo, peso in pesos.items():
+            val_linha = linha.get(campo, "")
+            val_ref = ref.get(campo, "")
+            if not val_linha or not val_ref:
+                continue
+            if campo == 'cep':
+                if val_linha == val_ref:
+                    score += peso
+                total_peso += peso
+            else:
+                score += difflib.SequenceMatcher(None, val_linha, val_ref).ratio() * peso
+                total_peso += peso
+        return score / total_peso if total_peso > 0 else 0.0
 
     @classmethod
     def executar(cls, caminho_excel_gerado, caminho_cruzamento, progress_callback=None):
         wb = load_workbook(caminho_excel_gerado)
         ws = wb.active
+        headers_gerado = [cell.value for cell in ws[1]]
+        cols_gerado = cls._mapear_colunas_gerado(headers_gerado)
 
-        wb_cruz = load_workbook(caminho_cruzamento, data_only=True)
-        ws_cruz = wb_cruz.active
+        wb_base = load_workbook(caminho_cruzamento, data_only=True)
+        if 'Base' not in wb_base.sheetnames:
+            raise ValueError(f"Aba 'Base' nao encontrada. Abas: {wb_base.sheetnames}")
+        ws_base = wb_base['Base']
+        headers_base = [cell.value for cell in ws_base[1]]
+        cols_base = cls._mapear_colunas_base(headers_base)
 
-        headers_cruz = [cell.value for cell in ws_cruz[1]]
-        mapa = cls._mapear_colunas_cruzamento(headers_cruz)
+        obrigatorias_base = ['endereco', 'cidade', 'cgc_unidade']
+        for col in obrigatorias_base:
+            if col not in cols_base:
+                raise ValueError(f"Coluna '{col}' nao encontrada na aba Base. Cabecalhos: {headers_base}")
 
-        # Verifica se encontrou as colunas necessárias no cruzamento
-        cols_necessarias = ['endereco', 'cidade']
-        for col in cols_necessarias:
-            if col not in mapa:
-                raise ValueError(
-                    f"Coluna '{col}' não encontrada na planilha de cruzamento. "
-                    f"Cabeçalhos encontrados: {headers_cruz}"
-                )
+        obrigatorias_gerado = ['endereco', 'cidade', 'cep', 'cgc']
+        for col in obrigatorias_gerado:
+            if col not in cols_gerado:
+                raise ValueError(f"Coluna '{col}' nao encontrada na planilha gerada. Cabecalhos: {headers_gerado}")
 
-        # Constrói lista de referência da planilha de cruzamento
+        # ── Constroi ref_data (fuzzy) e cgc_lookup (exato) ──
         ref_data = []
-        for row in ws_cruz.iter_rows(min_row=2, values_only=True):
-            end = row[mapa['endereco']] if mapa['endereco'] < len(row) else ""
-            bai = row[mapa['bairro']] if mapa.get('bairro', 0) < len(row) else ""
-            cid = row[mapa['cidade']] if mapa['cidade'] < len(row) else ""
-            cep = row[mapa['cep']] if mapa.get('cep', 0) < len(row) else ""
+        cgc_lookup = {}
 
-            ref_data.append({
-                'chave': cls._criar_chave(end, bai, cid, cep),
-                'cgc': row[mapa['CGC']] if mapa.get('CGC', 0) < len(row) else "",
-                'ciaus': row[mapa['CIAUS']] if mapa.get('CIAUS', 0) < len(row) else "",
-                'field': row[mapa['Field Responsável']] if mapa.get('Field Responsável', 0) < len(row) else "",
-            })
+        for row in ws_base.iter_rows(min_row=2, values_only=True):
+            idx_cgc_unid = cols_base['cgc_unidade']
+            cgc_unidade = row[idx_cgc_unid] if idx_cgc_unid < len(row) else None
+            if cgc_unidade is None or str(cgc_unidade).strip() in ('', 'N/A', '#N/A'):
+                continue
+            try:
+                cgc_int = int(float(str(cgc_unidade).replace(',', '.')))
+            except (ValueError, TypeError, OverflowError):
+                continue
+
+            end = cls._normalizar(row[cols_base['endereco']]) if cols_base['endereco'] < len(row) else ""
+            cid = cls._normalizar(row[cols_base['cidade']]) if cols_base['cidade'] < len(row) else ""
+            cep_raw = row[cols_base['cep']] if cols_base.get('cep', 0) < len(row) else ""
+            cep = cls._normalizar_cep(cep_raw)
+
+            if end or cep:
+                ref_data.append({'endereco': end, 'cidade': cid, 'cep': cep, 'cgc': cgc_int})
+
+            if cgc_int not in cgc_lookup:
+                idx_ciaus = cols_base.get('ciaus')
+                idx_field = cols_base.get('field')
+                ciaus_val = str(row[idx_ciaus]).strip() if idx_ciaus is not None and idx_ciaus < len(row) and row[idx_ciaus] is not None else ""
+                field_val = str(row[idx_field]).strip() if idx_field is not None and idx_field < len(row) and row[idx_field] is not None else ""
+                cgc_lookup[cgc_int] = {'ciaus': ciaus_val, 'field': field_val}
 
         if not ref_data:
-            raise ValueError("Planilha de cruzamento está vazia (sem linhas de dados).")
+            raise ValueError("Nenhuma linha com CGC Unidade valido na aba Base.")
 
-        headers_gerado = [cell.value for cell in ws[1]]
-
-        # Encontra índices das colunas de endereço no Excel gerado
-        def idx_col(nome):
-            for i, h in enumerate(headers_gerado):
-                if h and nome.lower() in str(h).lower():
-                    return i
-            return None
-
-        idx_end = idx_col("Endereço")
-        idx_bairro = idx_col("Bairro")
-        idx_cidade = idx_col("Cidade")
-        idx_cep = idx_col("CEP")
-
-        if idx_end is None or idx_cidade is None:
-            raise ValueError(
-                "Colunas de endereço não encontradas na planilha gerada."
-            )
-
-        # Adiciona cabeçalhos das novas colunas (preservando formatação)
-        ultima_col = ws.max_column
-        estilo_cabecalho = None
-        cell_ref = ws.cell(1, 1)
-        if cell_ref.font:
-            estilo_cabecalho = {
-                'fill': cell_ref.fill,
-                'font': cell_ref.font,
-                'alignment': cell_ref.alignment,
-            }
-
-        for i, nome_col in enumerate(['CGC (Cruzamento)', 'CIAUS', 'Field Responsável']):
-            col = ultima_col + 1 + i
-            cell = ws.cell(1, col)
-            cell.value = nome_col
-            if estilo_cabecalho:
-                cell.fill = estilo_cabecalho['fill']
-                cell.font = estilo_cabecalho['font']
-                cell.alignment = estilo_cabecalho['alignment']
-
-        # Define largura das novas colunas
-        col_letter = lambda n: chr(64 + n) if n <= 26 else None
-        widths = [18, 15, 20]
-        for i, w in enumerate(widths):
-            col = ultima_col + 1 + i
-            letra = col_letter(col)
-            if letra:
-                ws.column_dimensions[letra].width = w
+        idx_end = cols_gerado['endereco']
+        idx_cid = cols_gerado['cidade']
+        idx_cep = cols_gerado['cep']
+        idx_cgc = cols_gerado['cgc']
+        idx_ciaus = cols_gerado.get('ciaus')
+        idx_field = cols_gerado.get('field')
 
         total_linhas = ws.max_row - 1
+        substituidos_cgc = 0
+        preenchidos_ciaus_field = 0
+
         for row_idx in range(2, ws.max_row + 1):
             if progress_callback:
                 progress_callback(row_idx - 2, total_linhas)
 
-            # Constrói chave da linha atual
-            end = cls._normalizar(ws.cell(row_idx, idx_end + 1).value)
-            bai = cls._normalizar(ws.cell(row_idx, idx_bairro + 1).value) if idx_bairro else ""
-            cid = cls._normalizar(ws.cell(row_idx, idx_cidade + 1).value)
-            cep = cls._normalizar(ws.cell(row_idx, idx_cep + 1).value) if idx_cep else ""
+            cgc_atual = ws.cell(row_idx, idx_cgc + 1).value
 
-            chave_origem = f"{end} {bai} {cid} {cep}"
+            # Etapa A: fuzzy match para CGC onde estiver N/A
+            if cgc_atual is None or str(cgc_atual).strip() in ('N/A', '', '0'):
+                end_linha = cls._normalizar(ws.cell(row_idx, idx_end + 1).value)
+                cid_linha = cls._normalizar(ws.cell(row_idx, idx_cid + 1).value)
+                cep_linha = cls._normalizar_cep(ws.cell(row_idx, idx_cep + 1).value)
+                if end_linha or cid_linha or cep_linha:
+                    linha_atual = {'endereco': end_linha, 'cidade': cid_linha, 'cep': cep_linha}
+                    melhor_score = 0.0
+                    melhor_dados = None
+                    for ref in ref_data:
+                        score = cls._score_match(linha_atual, ref, cls.PESOS)
+                        if score > melhor_score:
+                            melhor_score = score
+                            melhor_dados = ref
+                    if melhor_dados and melhor_score >= 0.5:
+                        ws.cell(row_idx, idx_cgc + 1).value = melhor_dados['cgc']
+                        cgc_atual = melhor_dados['cgc']
+                        substituidos_cgc += 1
 
-            # Encontra melhor correspondência fuzzy
-            melhor_score = 0
-            melhor_ref = None
-            for ref in ref_data:
-                score = difflib.SequenceMatcher(None, chave_origem, ref['chave']).ratio()
-                if score > melhor_score:
-                    melhor_score = score
-                    melhor_ref = ref
-
-            # Escreve dados se o score for aceitável
-            threshold = 0.4
-            if melhor_ref and melhor_score >= threshold:
-                ws.cell(row_idx, ultima_col + 1).value = melhor_ref['cgc']
-                ws.cell(row_idx, ultima_col + 2).value = melhor_ref['ciaus']
-                ws.cell(row_idx, ultima_col + 3).value = melhor_ref['field']
-
-        # Aplica bordas nas novas colunas
-        borda = Border(
-            left=Side(style='thin'),
-            right=Side(style='thin'),
-            top=Side(style='thin'),
-            bottom=Side(style='thin'),
-        )
-        for row_idx in range(1, ws.max_row + 1):
-            for col in range(ultima_col + 1, ultima_col + 4):
-                ws.cell(row_idx, col).border = borda
-                if row_idx > 1:
-                    ws.cell(row_idx, col).font = Font(color="000080", size=10)
-                    ws.cell(row_idx, col).alignment = Alignment(horizontal="center", vertical="center")
+            # Etapa B: lookup de CIAUS/Field pelo CGC
+            if cgc_atual is not None and str(cgc_atual).strip() not in ('', 'N/A'):
+                try:
+                    cgc_int = int(cgc_atual) if not isinstance(cgc_atual, int) else cgc_atual
+                    dados = cgc_lookup.get(cgc_int)
+                    if dados:
+                        if idx_ciaus is not None and dados['ciaus']:
+                            ws.cell(row_idx, idx_ciaus + 1).value = dados['ciaus']
+                        if idx_field is not None and dados['field']:
+                            ws.cell(row_idx, idx_field + 1).value = dados['field']
+                        if dados['ciaus'] or dados['field']:
+                            preenchidos_ciaus_field += 1
+                except (ValueError, TypeError):
+                    pass
 
         wb.save(caminho_excel_gerado)
+        print(f"\n   Cruzamento concluido: {substituidos_cgc} CGC(s) preenchido(s), "
+              f"{preenchidos_ciaus_field} linha(s) com CIAUS/Field preenchidos")
         return True
 
 

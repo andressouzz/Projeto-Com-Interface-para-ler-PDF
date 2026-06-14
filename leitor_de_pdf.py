@@ -23,13 +23,7 @@ class LeitordePDF:
         'MG', 'PA', 'PB', 'PR', 'PE', 'PI', 'RJ', 'RN', 'RS', 'RO', 'RR', 'SC',
         'SP', 'SE', 'TO',
     })
-    # Contábil PT-BR (LCID 416): 5.088,12 — ponto nos milhares, vírgula, 2 decimais
-    FORMATO_CONTABIL_BR = (
-        '_-[$R$-416]* #.##0,00_-;'
-        '[$R$-416]* (#.##0,00)_-;'
-        '_-[$R$-416]* "-"??_-;'
-        '_-@_-'
-    )
+    FORMATO_CONTABIL_BR = '_-R$ * #,##0.00_-;R$ * (#,##0.00)_-;_-R$ * "-"??_-;_-@_-'
     
     def __init__(self):
         self.dados_nf = []
@@ -503,10 +497,12 @@ class LeitordePDF:
         ws.column_dimensions['H'].width = 35
         ws.column_dimensions['I'].width = 12
         ws.column_dimensions['J'].width = 15
-        ws.column_dimensions['K'].width = 30
-        ws.column_dimensions['L'].width = 15
-        ws.column_dimensions['M'].width = 15
-        ws.column_dimensions['N'].width = 12
+        ws.column_dimensions['K'].width = 15
+        ws.column_dimensions['L'].width = 20
+        ws.column_dimensions['M'].width = 30
+        ws.column_dimensions['N'].width = 15
+        ws.column_dimensions['O'].width = 15
+        ws.column_dimensions['P'].width = 12
         
         # Estilo do cabeçalho: fundo cinza e texto azul marinho
         fill_cinza = PatternFill(start_color="C0C0C0", end_color="C0C0C0", fill_type="solid")
@@ -517,7 +513,7 @@ class LeitordePDF:
         # Adiciona cabeçalhos
         headers = ["Número da NF", "Qtde Páginas PDF", "Cliente", "Data de Emissão", "UF de Destino", 
                    "Valor Total da NF", "Código SAP", "Descrição do Material", "Quantidade", 
-                   "CGC", "Endereço de Instalação", "Bairro", "Cidade", "CEP"]
+                   "CGC", "CIAUS", "Field Responsável", "Endereço de Instalação", "Bairro", "Cidade", "CEP"]
         
         for col_num, header in enumerate(headers, 1):
             cell = ws.cell(row=1, column=col_num)
@@ -532,7 +528,10 @@ class LeitordePDF:
         
         for idx, dado in enumerate(self.dados_nf, start=2):
             # Número da NF
-            ws[f'A{idx}'] = dado['numero_nf']
+            try:
+                ws[f'A{idx}'] = int(dado['numero_nf'])
+            except (ValueError, TypeError):
+                ws[f'A{idx}'] = dado['numero_nf']
             ws[f'A{idx}'].font = fonte_dados
             ws[f'A{idx}'].alignment = alignment_centralizado
             
@@ -578,34 +577,53 @@ class LeitordePDF:
             ws[f'H{idx}'].alignment = alignment_esquerda
             
             # Quantidade
-            ws[f'I{idx}'] = dado['quantidade']
+            try:
+                ws[f'I{idx}'] = int(dado['quantidade'])
+            except (ValueError, TypeError):
+                ws[f'I{idx}'] = dado['quantidade']
             ws[f'I{idx}'].font = fonte_dados
             ws[f'I{idx}'].alignment = alignment_centralizado
             
             # CGC
-            ws[f'J{idx}'] = dado['cgc']
+            if dado['cgc'] != "N/A":
+                try:
+                    ws[f'J{idx}'] = int(dado['cgc'])
+                except (ValueError, TypeError):
+                    ws[f'J{idx}'] = dado['cgc']
+            else:
+                ws[f'J{idx}'] = "N/A"
             ws[f'J{idx}'].font = fonte_dados
             ws[f'J{idx}'].alignment = alignment_centralizado
             
+            # CIAUS
+            ws[f'K{idx}'] = dado.get('ciaus', "N/A")
+            ws[f'K{idx}'].font = fonte_dados
+            ws[f'K{idx}'].alignment = alignment_centralizado
+            
+            # Field Responsável
+            ws[f'L{idx}'] = dado.get('field_responsavel', "N/A")
+            ws[f'L{idx}'].font = fonte_dados
+            ws[f'L{idx}'].alignment = alignment_centralizado
+            
             # Endereço de Instalação
-            ws[f'K{idx}'] = dado['endereco_instalacao']
+            ws[f'M{idx}'] = dado['endereco_instalacao']
             ws[f'K{idx}'].font = fonte_dados
             ws[f'K{idx}'].alignment = alignment_esquerda
             
             # Bairro
-            ws[f'L{idx}'] = dado['bairro']
-            ws[f'L{idx}'].font = fonte_dados
-            ws[f'L{idx}'].alignment = alignment_centralizado
-            
-            # Cidade
-            ws[f'M{idx}'] = dado['cidade']
-            ws[f'M{idx}'].font = fonte_dados
-            ws[f'M{idx}'].alignment = alignment_centralizado
-            
-            # CEP
-            ws[f'N{idx}'] = dado['cep']
+            ws[f'N{idx}'] = dado['bairro']
             ws[f'N{idx}'].font = fonte_dados
             ws[f'N{idx}'].alignment = alignment_centralizado
+            
+            # Cidade
+            ws[f'O{idx}'] = dado['cidade']
+            ws[f'O{idx}'].font = fonte_dados
+            ws[f'O{idx}'].alignment = alignment_centralizado
+            
+            # CEP
+            ws[f'P{idx}'] = dado['cep']
+            ws[f'P{idx}'].font = fonte_dados
+            ws[f'P{idx}'].alignment = alignment_centralizado
         
         # Grade só na área com conteúdo; restante da planilha sem linhas
         ws.sheet_view.showGridLines = False
