@@ -27,7 +27,8 @@ class LeitordePDF:
     
     def __init__(self):
         self.dados_nf = []
-        self.excel_path = "Leitura das Notas Fiscais.xlsx"
+        from datetime import datetime
+        self.excel_path = f"Leitura das Notas Fiscais - {datetime.now():%Y-%m-%d %Hh%M}.xlsx"
         self.console = Console()
     
     def extrair_numero_nf(self, texto):
@@ -607,8 +608,8 @@ class LeitordePDF:
             
             # Endereço de Instalação
             ws[f'M{idx}'] = dado['endereco_instalacao']
-            ws[f'K{idx}'].font = fonte_dados
-            ws[f'K{idx}'].alignment = alignment_esquerda
+            ws[f'M{idx}'].font = fonte_dados
+            ws[f'M{idx}'].alignment = alignment_centralizado
             
             # Bairro
             ws[f'N{idx}'] = dado['bairro']

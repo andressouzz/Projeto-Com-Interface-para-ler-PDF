@@ -129,10 +129,8 @@ class CruzamentoDados:
             if col not in cols_gerado:
                 raise ValueError(f"Coluna '{col}' nao encontrada na planilha gerada. Cabecalhos: {headers_gerado}")
 
-        # ── Constroi ref_data (fuzzy) e cgc_lookup (exato) ──
+        # ── Constroi ref_data da Base (Endereco + CEP + Cidade → CGC, CIAUS, Field) ──
         ref_data = []
-        cgc_lookup = {}
-
         for row in ws_base.iter_rows(min_row=2, values_only=True):
             idx_cgc_unid = cols_base['cgc_unidade']
             cgc_unidade = row[idx_cgc_unid] if idx_cgc_unid < len(row) else None
@@ -148,15 +146,18 @@ class CruzamentoDados:
             cep_raw = row[cols_base['cep']] if cols_base.get('cep', 0) < len(row) else ""
             cep = cls._normalizar_cep(cep_raw)
 
-            if end or cep:
-                ref_data.append({'endereco': end, 'cidade': cid, 'cep': cep, 'cgc': cgc_int})
+            if not end and not cep:
+                continue
 
-            if cgc_int not in cgc_lookup:
-                idx_ciaus = cols_base.get('ciaus')
-                idx_field = cols_base.get('field')
-                ciaus_val = str(row[idx_ciaus]).strip() if idx_ciaus is not None and idx_ciaus < len(row) and row[idx_ciaus] is not None else ""
-                field_val = str(row[idx_field]).strip() if idx_field is not None and idx_field < len(row) and row[idx_field] is not None else ""
-                cgc_lookup[cgc_int] = {'ciaus': ciaus_val, 'field': field_val}
+            idx_ciaus = cols_base.get('ciaus')
+            idx_field = cols_base.get('field')
+            ciaus_val = str(row[idx_ciaus]).strip() if idx_ciaus is not None and idx_ciaus < len(row) and row[idx_ciaus] is not None else ""
+            field_val = str(row[idx_field]).strip() if idx_field is not None and idx_field < len(row) and row[idx_field] is not None else ""
+
+            ref_data.append({
+                'endereco': end, 'cidade': cid, 'cep': cep,
+                'cgc': cgc_int, 'ciaus': ciaus_val, 'field': field_val,
+            })
 
         if not ref_data:
             raise ValueError("Nenhuma linha com CGC Unidade valido na aba Base.")
@@ -168,6 +169,9 @@ class CruzamentoDados:
         idx_ciaus = cols_gerado.get('ciaus')
         idx_field = cols_gerado.get('field')
 
+        fonte_dados = Font(color="000080", size=10)
+        alignment_centralizado = Alignment(horizontal="center", vertical="center")
+
         total_linhas = ws.max_row - 1
         substituidos_cgc = 0
         preenchidos_ciaus_field = 0
@@ -178,39 +182,40 @@ class CruzamentoDados:
 
             cgc_atual = ws.cell(row_idx, idx_cgc + 1).value
 
-            # Etapa A: fuzzy match para CGC onde estiver N/A
-            if cgc_atual is None or str(cgc_atual).strip() in ('N/A', '', '0'):
-                end_linha = cls._normalizar(ws.cell(row_idx, idx_end + 1).value)
-                cid_linha = cls._normalizar(ws.cell(row_idx, idx_cid + 1).value)
-                cep_linha = cls._normalizar_cep(ws.cell(row_idx, idx_cep + 1).value)
-                if end_linha or cid_linha or cep_linha:
-                    linha_atual = {'endereco': end_linha, 'cidade': cid_linha, 'cep': cep_linha}
-                    melhor_score = 0.0
-                    melhor_dados = None
-                    for ref in ref_data:
-                        score = cls._score_match(linha_atual, ref, cls.PESOS)
-                        if score > melhor_score:
-                            melhor_score = score
-                            melhor_dados = ref
-                    if melhor_dados and melhor_score >= 0.5:
-                        ws.cell(row_idx, idx_cgc + 1).value = melhor_dados['cgc']
-                        cgc_atual = melhor_dados['cgc']
-                        substituidos_cgc += 1
+            # Constroi chave da linha atual
+            end_linha = cls._normalizar(ws.cell(row_idx, idx_end + 1).value)
+            cid_linha = cls._normalizar(ws.cell(row_idx, idx_cid + 1).value)
+            cep_linha = cls._normalizar_cep(ws.cell(row_idx, idx_cep + 1).value)
 
-            # Etapa B: lookup de CIAUS/Field pelo CGC
-            if cgc_atual is not None and str(cgc_atual).strip() not in ('', 'N/A'):
-                try:
-                    cgc_int = int(cgc_atual) if not isinstance(cgc_atual, int) else cgc_atual
-                    dados = cgc_lookup.get(cgc_int)
-                    if dados:
-                        if idx_ciaus is not None and dados['ciaus']:
-                            ws.cell(row_idx, idx_ciaus + 1).value = dados['ciaus']
-                        if idx_field is not None and dados['field']:
-                            ws.cell(row_idx, idx_field + 1).value = dados['field']
-                        if dados['ciaus'] or dados['field']:
-                            preenchidos_ciaus_field += 1
-                except (ValueError, TypeError):
-                    pass
+            if not end_linha and not cid_linha and not cep_linha:
+                continue
+
+            linha_atual = {'endereco': end_linha, 'cidade': cid_linha, 'cep': cep_linha}
+
+            # Fuzzy match unico contra todos os registros da Base
+            melhor_score = 0.0
+            melhor_dados = None
+            for ref in ref_data:
+                score = cls._score_match(linha_atual, ref, cls.PESOS)
+                if score > melhor_score:
+                    melhor_score = score
+                    melhor_dados = ref
+
+            if melhor_dados and melhor_score >= 0.5:
+                # So substitui CGC se estiver N/A
+                if cgc_atual is None or str(cgc_atual).strip() in ('N/A', '', '0'):
+                    ws.cell(row_idx, idx_cgc + 1).value = melhor_dados['cgc']
+                    substituidos_cgc += 1
+
+                if idx_ciaus is not None and melhor_dados['ciaus']:
+                    ws.cell(row_idx, idx_ciaus + 1).value = melhor_dados['ciaus']
+                    ws.cell(row_idx, idx_ciaus + 1).font = fonte_dados
+                    ws.cell(row_idx, idx_ciaus + 1).alignment = alignment_centralizado
+                    preenchidos_ciaus_field += 1
+                if idx_field is not None and melhor_dados['field']:
+                    ws.cell(row_idx, idx_field + 1).value = melhor_dados['field']
+                    ws.cell(row_idx, idx_field + 1).font = fonte_dados
+                    ws.cell(row_idx, idx_field + 1).alignment = alignment_centralizado
 
         wb.save(caminho_excel_gerado)
         print(f"\n   Cruzamento concluido: {substituidos_cgc} CGC(s) preenchido(s), "
@@ -226,8 +231,10 @@ class LeitorDePDFGUI:
         self.window.configure(bg="#f0f0f0")
 
         self.dir_path = tk.StringVar(value=str(Path.cwd()))
+        from datetime import datetime
+        nome_padrao = f"Leitura das Notas Fiscais - {datetime.now():%Y-%m-%d %Hh%M}.xlsx"
         self.excel_path = tk.StringVar(
-            value=str(Path.cwd() / "Leitura das Notas Fiscais.xlsx")
+            value=str(Path.cwd() / nome_padrao)
         )
         self.cruzamento_path = tk.StringVar()
         self._nf_counter = 0
