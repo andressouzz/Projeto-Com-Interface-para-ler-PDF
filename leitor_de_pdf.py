@@ -8,7 +8,7 @@ e gera uma planilha Excel formatada.
 import re
 from pathlib import Path
 from PyPDF2 import PdfReader
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, numbers
 from openpyxl.utils import get_column_letter
 from rich.console import Console
@@ -647,8 +647,32 @@ class LeitordePDF:
         except Exception as e:
             print(f"❌ Erro ao salvar planilha: {e}")
     
-    def executar(self, diretorio="."):
-        """Executa o fluxo completo de leitura e geração da planilha."""
+    def _recarregar_dados_cruzamento(self):
+        """Recarrega CGC, CIAUS e Field do Excel após o cruzamento para atualizar self.dados_nf."""
+        wb = load_workbook(self.excel_path)
+        ws = wb.active
+        headers = [cell.value for cell in ws[1]]
+        col_map = {}
+        for i, h in enumerate(headers):
+            col_map[h] = i
+        for idx, dado in enumerate(self.dados_nf, start=2):
+            row = ws[idx]
+            if 'CGC' in col_map:
+                val = row[col_map['CGC']].value
+                if val is not None and str(val).strip() not in ('', 'N/A', '0'):
+                    dado['cgc'] = str(val)
+            if 'CIAUS' in col_map:
+                val = row[col_map['CIAUS']].value
+                if val is not None and str(val).strip():
+                    dado['ciaus'] = str(val)
+            if 'Field Responsável' in col_map:
+                val = row[col_map['Field Responsável']].value
+                if val is not None and str(val).strip():
+                    dado['field_responsavel'] = str(val)
+        wb.close()
+
+    def executar(self, diretorio=".", caminho_cruzamento=None):
+        """Executa o fluxo completo de leitura, geração da planilha e cruzamento."""
         print("=" * 50)
         print("🔍 LEITOR DE PDF - Notas Fiscais")
         print("=" * 50)
@@ -657,15 +681,273 @@ class LeitordePDF:
         
         if self.dados_nf:
             print(f"\n📊 Total de NFs extraídas: {len(self.dados_nf)}\n")
-            self.exibir_preview_planilha()
             self.criar_planilha_excel()
+            
+            # Etapa de cruzamento
+            if caminho_cruzamento:
+                print("\n" + "=" * 50)
+                print("🔗 Iniciando cruzamento de dados...")
+                print("=" * 50)
+                try:
+                    CruzamentoDados.executar(
+                        self.excel_path,
+                        caminho_cruzamento,
+                    )
+                    print("\n✅ Cruzamento de dados concluído!")
+                    print("   Colunas adicionadas: CGC, CIAUS, Field Responsável")
+                    self._recarregar_dados_cruzamento()
+                except Exception as e:
+                    print(f"\n⚠️  Erro no cruzamento: {e}")
+            
+            self.exibir_preview_planilha()
         else:
             print("\n⚠️  Nenhuma nota fiscal foi encontrada nos PDFs.")
+
+
+class CruzamentoDados:
+    """Cruzamento entre planilha gerada e aba Base do SDLAN CEF."""
+
+    PESOS = {'endereco': 25, 'bairro': 20, 'cidade': 25, 'cep': 30}
+
+    COLUNAS_BASE = {
+        'endereco': ['endereço', 'endereco', 'logradouro', 'end'],
+        'bairro': ['bairro'],
+        'cidade': ['cidade', 'município', 'municipio'],
+        'cep': ['cep', 'postal', 'zip'],
+        'cgc_unidade': ['cgc unidade', 'cgc da unidade', 'cgc unid'],
+        'ciaus': ['ciaus'],
+        'field': ['field responsável', 'field'],
+    }
+
+    COLUNAS_GERADO = {
+        'endereco': 'endereço de instalação',
+        'bairro': 'bairro',
+        'cidade': 'cidade',
+        'cep': 'cep',
+        'cgc': 'cgc',
+        'ciaus': 'ciaus',
+        'field': 'field responsável',
+    }
+
+    _RE_ACENTOS = re.compile(r'[àáâãäå]', re.I)
+    _RE_ACENTOS_E = re.compile(r'[èéêë]', re.I)
+    _RE_ACENTOS_I = re.compile(r'[ìíîï]', re.I)
+    _RE_ACENTOS_O = re.compile(r'[òóôõö]', re.I)
+    _RE_ACENTOS_U = re.compile(r'[ùúûü]', re.I)
+    _RE_ACENTOS_C = re.compile(r'[ç]', re.I)
+
+    @staticmethod
+    def _normalizar(texto):
+        if not texto:
+            return ""
+        s = str(texto)
+        s = CruzamentoDados._RE_ACENTOS.sub('a', s)
+        s = CruzamentoDados._RE_ACENTOS_E.sub('e', s)
+        s = CruzamentoDados._RE_ACENTOS_I.sub('i', s)
+        s = CruzamentoDados._RE_ACENTOS_O.sub('o', s)
+        s = CruzamentoDados._RE_ACENTOS_U.sub('u', s)
+        s = CruzamentoDados._RE_ACENTOS_C.sub('c', s)
+        return re.sub(r'\s+', ' ', s.lower().strip())
+
+    @staticmethod
+    def _normalizar_cep(texto):
+        if not texto:
+            return ""
+        return re.sub(r'\D', '', str(texto))
+
+    @staticmethod
+    def _encontrar_coluna(headers, padroes):
+        headers_lower = [str(h).lower().strip() if h else "" for h in headers]
+        for i, h in enumerate(headers_lower):
+            for padrao in padroes:
+                if padrao in h:
+                    return i
+        return None
+
+    @classmethod
+    def _mapear_colunas_base(cls, headers):
+        mapeamento = {}
+        for campo, padroes in cls.COLUNAS_BASE.items():
+            idx = cls._encontrar_coluna(headers, padroes)
+            if idx is not None:
+                mapeamento[campo] = idx
+        return mapeamento
+
+    @classmethod
+    def _mapear_colunas_gerado(cls, headers):
+        mapeamento = {}
+        for campo, nome_busca in cls.COLUNAS_GERADO.items():
+            for i, h in enumerate(headers):
+                if h and nome_busca in str(h).lower().strip():
+                    mapeamento[campo] = i
+                    break
+        return mapeamento
+
+    @staticmethod
+    def _ratio_tokens(a, b):
+        tokens_a = set(a.split())
+        tokens_b = set(b.split())
+        if not tokens_a or not tokens_b:
+            return 0.0
+        inter = tokens_a & tokens_b
+        return len(inter) / max(len(tokens_a), len(tokens_b))
+
+    @staticmethod
+    def _score_match(linha, ref, pesos):
+        score = 0.0
+        total_peso = 0.0
+        for campo, peso in pesos.items():
+            val_linha = linha.get(campo, "")
+            val_ref = ref.get(campo, "")
+            if not val_linha or not val_ref:
+                continue
+            if campo == 'cep':
+                if val_linha == val_ref:
+                    score += peso
+                total_peso += peso
+            else:
+                score += CruzamentoDados._ratio_tokens(val_linha, val_ref) * peso
+                total_peso += peso
+        return score / total_peso if total_peso > 0 else 0.0
+
+    @classmethod
+    def executar(cls, caminho_excel_gerado, caminho_cruzamento, progress_callback=None):
+        wb = load_workbook(caminho_excel_gerado)
+        ws = wb.active
+        headers_gerado = [cell.value for cell in ws[1]]
+        cols_gerado = cls._mapear_colunas_gerado(headers_gerado)
+
+        wb_base = load_workbook(caminho_cruzamento, data_only=True, read_only=True)
+        if 'Base' not in wb_base.sheetnames:
+            raise ValueError(f"Aba 'Base' nao encontrada. Abas: {wb_base.sheetnames}")
+        ws_base = wb_base['Base']
+        headers_base = [cell.value for cell in ws_base[1]]
+        cols_base = cls._mapear_colunas_base(headers_base)
+
+        obrigatorias_base = ['endereco', 'bairro', 'cidade', 'cep', 'cgc_unidade']
+        for col in obrigatorias_base:
+            if col not in cols_base:
+                raise ValueError(f"Coluna '{col}' nao encontrada na aba Base. Cabecalhos: {headers_base}")
+
+        obrigatorias_gerado = ['endereco', 'bairro', 'cidade', 'cep', 'cgc']
+        for col in obrigatorias_gerado:
+            if col not in cols_gerado:
+                raise ValueError(f"Coluna '{col}' nao encontrada na planilha gerada. Cabecalhos: {headers_gerado}")
+
+        ref_por_cidade = {}
+        idx_cgc_unid = cols_base['cgc_unidade']
+        idx_ciaus = cols_base.get('ciaus')
+        idx_field = cols_base.get('field')
+
+        for row in ws_base.iter_rows(min_row=2, values_only=True):
+            cgc_unidade = row[idx_cgc_unid] if idx_cgc_unid < len(row) else None
+            if cgc_unidade is None or str(cgc_unidade).strip() in ('', 'N/A', '#N/A'):
+                continue
+            try:
+                cgc_int = int(float(str(cgc_unidade).replace(',', '.')))
+            except (ValueError, TypeError, OverflowError):
+                continue
+
+            end = cls._normalizar(row[cols_base['endereco']]) if cols_base['endereco'] < len(row) else ""
+            bai = cls._normalizar(row[cols_base['bairro']]) if cols_base['bairro'] < len(row) else ""
+            cid = cls._normalizar(row[cols_base['cidade']]) if cols_base['cidade'] < len(row) else ""
+            cep_raw = row[cols_base['cep']] if cols_base.get('cep', 0) < len(row) else ""
+            cep = cls._normalizar_cep(cep_raw)
+
+            if not end and not bai and not cid and not cep:
+                continue
+
+            ciaus_val = str(row[idx_ciaus]).strip() if idx_ciaus is not None and idx_ciaus < len(row) and row[idx_ciaus] is not None else ""
+            field_val = str(row[idx_field]).strip() if idx_field is not None and idx_field < len(row) and row[idx_field] is not None else ""
+
+            registro = {
+                'endereco': end, 'bairro': bai, 'cidade': cid, 'cep': cep,
+                'cgc': cgc_int, 'ciaus': ciaus_val, 'field': field_val,
+            }
+
+            chave_cidade = cid if cid else "_sem_cidade"
+            if chave_cidade not in ref_por_cidade:
+                ref_por_cidade[chave_cidade] = []
+            ref_por_cidade[chave_cidade].append(registro)
+
+        if not ref_por_cidade:
+            raise ValueError("Nenhuma linha com CGC Unidade valido na aba Base.")
+
+        idx_end = cols_gerado['endereco']
+        idx_bai = cols_gerado['bairro']
+        idx_cid = cols_gerado['cidade']
+        idx_cep = cols_gerado['cep']
+        idx_cgc = cols_gerado['cgc']
+        idx_ciaus = cols_gerado.get('ciaus')
+        idx_field = cols_gerado.get('field')
+
+        fonte_dados = Font(color="000080", size=10)
+        alignment_centralizado = Alignment(horizontal="center", vertical="center")
+
+        total_linhas = ws.max_row - 1
+        substituidos_cgc = 0
+        preenchidos_ciaus_field = 0
+
+        cache_grupo = {}
+
+        for row_idx in range(2, ws.max_row + 1):
+            if progress_callback:
+                progress_callback(row_idx - 2, total_linhas)
+
+            cgc_atual = ws.cell(row_idx, idx_cgc + 1).value
+
+            end_linha = cls._normalizar(ws.cell(row_idx, idx_end + 1).value)
+            bai_linha = cls._normalizar(ws.cell(row_idx, idx_bai + 1).value)
+            cid_linha = cls._normalizar(ws.cell(row_idx, idx_cid + 1).value)
+            cep_linha = cls._normalizar_cep(ws.cell(row_idx, idx_cep + 1).value)
+
+            if not end_linha and not bai_linha and not cid_linha and not cep_linha:
+                continue
+
+            linha_atual = {'endereco': end_linha, 'bairro': bai_linha, 'cidade': cid_linha, 'cep': cep_linha}
+
+            candidatos = ref_por_cidade.get(cid_linha, [])
+            if not candidatos:
+                candidatos = [r for grupo in ref_por_cidade.values() for r in grupo]
+
+            melhor_score = 0.0
+            melhor_dados = None
+            for ref in candidatos:
+                score = cls._score_match(linha_atual, ref, cls.PESOS)
+                if score > melhor_score:
+                    melhor_score = score
+                    melhor_dados = ref
+
+            if melhor_dados and melhor_score >= 0.3:
+                if cgc_atual is None or str(cgc_atual).strip() in ('N/A', '', '0'):
+                    ws.cell(row_idx, idx_cgc + 1).value = melhor_dados['cgc']
+                    substituidos_cgc += 1
+
+                if idx_ciaus is not None and melhor_dados['ciaus']:
+                    ws.cell(row_idx, idx_ciaus + 1).value = melhor_dados['ciaus']
+                    ws.cell(row_idx, idx_ciaus + 1).font = fonte_dados
+                    ws.cell(row_idx, idx_ciaus + 1).alignment = alignment_centralizado
+                    preenchidos_ciaus_field += 1
+                if idx_field is not None and melhor_dados['field']:
+                    ws.cell(row_idx, idx_field + 1).value = melhor_dados['field']
+                    ws.cell(row_idx, idx_field + 1).font = fonte_dados
+                    ws.cell(row_idx, idx_field + 1).alignment = alignment_centralizado
+
+        wb.save(caminho_excel_gerado)
+        print(f"\n   Cruzamento concluido: {substituidos_cgc} CGC(s) preenchido(s), "
+              f"{preenchidos_ciaus_field} linha(s) com CIAUS/Field preenchidos")
+        return True
 
 
 if __name__ == "__main__":
     # Cria instância e executa
     leitor = LeitordePDF()
     
-    # Processa PDFs no diretório atual
-    leitor.executar()
+    # Procura automaticamente pela planilha Base para cruzamento
+    base_files = sorted(Path(".").glob("Base do Projeto SDLAN CEF*.xlsx"))
+    caminho_cruzamento = str(base_files[0]) if base_files else None
+    if caminho_cruzamento:
+        print(f"📎 Planilha Base encontrada: {base_files[0].name}")
+    
+    # Processa PDFs no diretório atual e faz cruzamento se houver Base
+    leitor.executar(caminho_cruzamento=caminho_cruzamento)

@@ -5,15 +5,11 @@ Leitor de Notas Ficais de Hardware
 """
 
 import os
-import re
 import sys
-import difflib
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from pathlib import Path
-from openpyxl import load_workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 # Adiciona o diretório ao path para importar o módulo principal
 if getattr(sys, 'frozen', False):
@@ -21,206 +17,7 @@ if getattr(sys, 'frozen', False):
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
-from leitor_de_pdf import LeitordePDF
-
-
-class CruzamentoDados:
-    """Cruzamento entre planilha gerada e aba Base do SDLAN CEF."""
-
-    PESOS = {'endereco': 30, 'cidade': 30, 'cep': 40}
-
-    COLUNAS_BASE = {
-        'endereco': ['endereço', 'endereco', 'logradouro', 'end'],
-        'cidade': ['cidade', 'município', 'municipio'],
-        'cep': ['cep', 'postal', 'zip'],
-        'cgc_unidade': ['cgc unidade', 'cgc da unidade', 'cgc unid'],
-        'ciaus': ['ciaus'],
-        'field': ['field responsável', 'field'],
-    }
-
-    COLUNAS_GERADO = {
-        'endereco': 'endereço de instalação',
-        'cidade': 'cidade',
-        'cep': 'cep',
-        'cgc': 'cgc',
-        'ciaus': 'ciaus',
-        'field': 'field responsável',
-    }
-
-    @staticmethod
-    def _normalizar(texto):
-        if not texto:
-            return ""
-        return re.sub(r'\s+', ' ', str(texto).lower().strip())
-
-    @staticmethod
-    def _normalizar_cep(texto):
-        if not texto:
-            return ""
-        return re.sub(r'\D', '', str(texto))
-
-    @staticmethod
-    def _encontrar_coluna(headers, padroes):
-        headers_lower = [str(h).lower().strip() if h else "" for h in headers]
-        for i, h in enumerate(headers_lower):
-            for padrao in padroes:
-                if padrao in h:
-                    return i
-        return None
-
-    @classmethod
-    def _mapear_colunas_base(cls, headers):
-        mapeamento = {}
-        for campo, padroes in cls.COLUNAS_BASE.items():
-            idx = cls._encontrar_coluna(headers, padroes)
-            if idx is not None:
-                mapeamento[campo] = idx
-        return mapeamento
-
-    @classmethod
-    def _mapear_colunas_gerado(cls, headers):
-        mapeamento = {}
-        for campo, nome_busca in cls.COLUNAS_GERADO.items():
-            for i, h in enumerate(headers):
-                if h and nome_busca in str(h).lower().strip():
-                    mapeamento[campo] = i
-                    break
-        return mapeamento
-
-    @staticmethod
-    def _score_match(linha, ref, pesos):
-        score = 0.0
-        total_peso = 0.0
-        for campo, peso in pesos.items():
-            val_linha = linha.get(campo, "")
-            val_ref = ref.get(campo, "")
-            if not val_linha or not val_ref:
-                continue
-            if campo == 'cep':
-                if val_linha == val_ref:
-                    score += peso
-                total_peso += peso
-            else:
-                score += difflib.SequenceMatcher(None, val_linha, val_ref).ratio() * peso
-                total_peso += peso
-        return score / total_peso if total_peso > 0 else 0.0
-
-    @classmethod
-    def executar(cls, caminho_excel_gerado, caminho_cruzamento, progress_callback=None):
-        wb = load_workbook(caminho_excel_gerado)
-        ws = wb.active
-        headers_gerado = [cell.value for cell in ws[1]]
-        cols_gerado = cls._mapear_colunas_gerado(headers_gerado)
-
-        wb_base = load_workbook(caminho_cruzamento, data_only=True)
-        if 'Base' not in wb_base.sheetnames:
-            raise ValueError(f"Aba 'Base' nao encontrada. Abas: {wb_base.sheetnames}")
-        ws_base = wb_base['Base']
-        headers_base = [cell.value for cell in ws_base[1]]
-        cols_base = cls._mapear_colunas_base(headers_base)
-
-        obrigatorias_base = ['endereco', 'cidade', 'cgc_unidade']
-        for col in obrigatorias_base:
-            if col not in cols_base:
-                raise ValueError(f"Coluna '{col}' nao encontrada na aba Base. Cabecalhos: {headers_base}")
-
-        obrigatorias_gerado = ['endereco', 'cidade', 'cep', 'cgc']
-        for col in obrigatorias_gerado:
-            if col not in cols_gerado:
-                raise ValueError(f"Coluna '{col}' nao encontrada na planilha gerada. Cabecalhos: {headers_gerado}")
-
-        # ── Constroi ref_data da Base (Endereco + CEP + Cidade → CGC, CIAUS, Field) ──
-        ref_data = []
-        for row in ws_base.iter_rows(min_row=2, values_only=True):
-            idx_cgc_unid = cols_base['cgc_unidade']
-            cgc_unidade = row[idx_cgc_unid] if idx_cgc_unid < len(row) else None
-            if cgc_unidade is None or str(cgc_unidade).strip() in ('', 'N/A', '#N/A'):
-                continue
-            try:
-                cgc_int = int(float(str(cgc_unidade).replace(',', '.')))
-            except (ValueError, TypeError, OverflowError):
-                continue
-
-            end = cls._normalizar(row[cols_base['endereco']]) if cols_base['endereco'] < len(row) else ""
-            cid = cls._normalizar(row[cols_base['cidade']]) if cols_base['cidade'] < len(row) else ""
-            cep_raw = row[cols_base['cep']] if cols_base.get('cep', 0) < len(row) else ""
-            cep = cls._normalizar_cep(cep_raw)
-
-            if not end and not cep:
-                continue
-
-            idx_ciaus = cols_base.get('ciaus')
-            idx_field = cols_base.get('field')
-            ciaus_val = str(row[idx_ciaus]).strip() if idx_ciaus is not None and idx_ciaus < len(row) and row[idx_ciaus] is not None else ""
-            field_val = str(row[idx_field]).strip() if idx_field is not None and idx_field < len(row) and row[idx_field] is not None else ""
-
-            ref_data.append({
-                'endereco': end, 'cidade': cid, 'cep': cep,
-                'cgc': cgc_int, 'ciaus': ciaus_val, 'field': field_val,
-            })
-
-        if not ref_data:
-            raise ValueError("Nenhuma linha com CGC Unidade valido na aba Base.")
-
-        idx_end = cols_gerado['endereco']
-        idx_cid = cols_gerado['cidade']
-        idx_cep = cols_gerado['cep']
-        idx_cgc = cols_gerado['cgc']
-        idx_ciaus = cols_gerado.get('ciaus')
-        idx_field = cols_gerado.get('field')
-
-        fonte_dados = Font(color="000080", size=10)
-        alignment_centralizado = Alignment(horizontal="center", vertical="center")
-
-        total_linhas = ws.max_row - 1
-        substituidos_cgc = 0
-        preenchidos_ciaus_field = 0
-
-        for row_idx in range(2, ws.max_row + 1):
-            if progress_callback:
-                progress_callback(row_idx - 2, total_linhas)
-
-            cgc_atual = ws.cell(row_idx, idx_cgc + 1).value
-
-            # Constroi chave da linha atual
-            end_linha = cls._normalizar(ws.cell(row_idx, idx_end + 1).value)
-            cid_linha = cls._normalizar(ws.cell(row_idx, idx_cid + 1).value)
-            cep_linha = cls._normalizar_cep(ws.cell(row_idx, idx_cep + 1).value)
-
-            if not end_linha and not cid_linha and not cep_linha:
-                continue
-
-            linha_atual = {'endereco': end_linha, 'cidade': cid_linha, 'cep': cep_linha}
-
-            # Fuzzy match unico contra todos os registros da Base
-            melhor_score = 0.0
-            melhor_dados = None
-            for ref in ref_data:
-                score = cls._score_match(linha_atual, ref, cls.PESOS)
-                if score > melhor_score:
-                    melhor_score = score
-                    melhor_dados = ref
-
-            if melhor_dados and melhor_score >= 0.5:
-                # So substitui CGC se estiver N/A
-                if cgc_atual is None or str(cgc_atual).strip() in ('N/A', '', '0'):
-                    ws.cell(row_idx, idx_cgc + 1).value = melhor_dados['cgc']
-                    substituidos_cgc += 1
-
-                if idx_ciaus is not None and melhor_dados['ciaus']:
-                    ws.cell(row_idx, idx_ciaus + 1).value = melhor_dados['ciaus']
-                    ws.cell(row_idx, idx_ciaus + 1).font = fonte_dados
-                    ws.cell(row_idx, idx_ciaus + 1).alignment = alignment_centralizado
-                    preenchidos_ciaus_field += 1
-                if idx_field is not None and melhor_dados['field']:
-                    ws.cell(row_idx, idx_field + 1).value = melhor_dados['field']
-                    ws.cell(row_idx, idx_field + 1).font = fonte_dados
-                    ws.cell(row_idx, idx_field + 1).alignment = alignment_centralizado
-
-        wb.save(caminho_excel_gerado)
-        print(f"\n   Cruzamento concluido: {substituidos_cgc} CGC(s) preenchido(s), "
-              f"{preenchidos_ciaus_field} linha(s) com CIAUS/Field preenchidos")
-        return True
+from leitor_de_pdf import LeitordePDF, CruzamentoDados
 
 
 class LeitorDePDFGUI:
@@ -434,8 +231,6 @@ class LeitorDePDFGUI:
         thread.start()
 
     def _processar(self):
-        import re  # needed by CruzamentoDados._normalizar
-
         try:
             # Conta PDFs antes de processar
             pdfs = sorted(Path(self.dir_path.get()).rglob("*.pdf"))
