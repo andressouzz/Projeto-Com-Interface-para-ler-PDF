@@ -104,9 +104,11 @@ class LeitorDePDFGUI:
             row=3, column=0, columnspan=3, sticky="ew", pady=15
         )
 
-        # Botão Executar
+        # Botões Executar e Abrir Planilha
         btn_frame = tk.Frame(tab_leitor, bg="#f0f0f0")
-        btn_frame.grid(row=4, column=0, columnspan=3, pady=5)
+        btn_frame.grid(row=4, column=0, columnspan=3, pady=5, sticky="ew")
+        btn_frame.grid_columnconfigure(0, weight=1)
+        btn_frame.grid_columnconfigure(2, weight=1)
 
         self.btn_executar = tk.Button(
             btn_frame,
@@ -120,9 +122,8 @@ class LeitorDePDFGUI:
             cursor="hand2",
             command=self._executar,
         )
-        self.btn_executar.pack()
+        self.btn_executar.grid(row=0, column=1)
 
-        # Botão Abrir Planilha
         self.btn_abrir = tk.Button(
             btn_frame,
             text="Abrir Planilha",
@@ -136,7 +137,7 @@ class LeitorDePDFGUI:
             state="disabled",
             command=self._abrir_planilha,
         )
-        self.btn_abrir.pack(side="left", padx=(20, 0))
+        self.btn_abrir.grid(row=0, column=2, sticky="e", padx=(0, 5))
 
         # Barra de progresso
         self.progress = ttk.Progressbar(
