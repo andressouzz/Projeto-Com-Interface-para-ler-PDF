@@ -116,6 +116,22 @@ class LeitorDePDFGUI:
         )
         self.btn_executar.pack()
 
+        # Botão Abrir Planilha
+        self.btn_abrir = tk.Button(
+            btn_frame,
+            text="Abrir Planilha",
+            font=("Segoe UI", 10, "bold"),
+            bg="#28a745",
+            fg="white",
+            padx=20,
+            pady=5,
+            relief="flat",
+            cursor="hand2",
+            state="disabled",
+            command=self._abrir_planilha,
+        )
+        self.btn_abrir.pack(side="left", padx=(20, 0))
+
         # Barra de progresso
         self.progress = ttk.Progressbar(
             tab_leitor, mode="determinate", length=600
@@ -469,6 +485,16 @@ class LeitorDePDFGUI:
         self._log(f"{copiados} arquivo(s) copiado(s) para {destino}.")
         messagebox.showinfo("Concluido", f"{copiados} arquivo(s) copiado(s).")
 
+    def _abrir_planilha(self):
+        path = self.excel_path.get()
+        if not path or not os.path.exists(path):
+            messagebox.showinfo("Aviso", "Nenhuma planilha encontrada. Execute o processamento primeiro.")
+            return
+        try:
+            os.startfile(path)
+        except Exception as e:
+            self._log(f"Erro ao abrir planilha: {e}")
+
     def _progress_callback(self, atual, total):
         if total > 0:
             pct = int((atual / total) * 100)
@@ -530,6 +556,7 @@ class LeitorDePDFGUI:
         if erro:
             self.lbl_status.configure(text="Erro na execucao")
         else:
+            self.btn_abrir.configure(state="normal")
             self.lbl_status.configure(text="Concluido!")
             self.lbl_contagem.configure(
                 text=f"Leitura concluida - {self._total_nfs} notas fiscais lidas"
