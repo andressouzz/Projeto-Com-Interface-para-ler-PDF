@@ -59,6 +59,15 @@ class LeitorDePDFGUI:
         notebook = ttk.Notebook(self.window)
         notebook.pack(fill="both", expand=True, padx=10, pady=5)
 
+        # Estilo: aba selecionada em laranja
+        style = ttk.Style()
+        try:
+            style.theme_use("vista")
+        except:
+            pass
+        style.configure("TNotebook.Tab", background="#F0F0F0")
+        style.map("TNotebook.Tab", background=[("selected", "#ED7D31")])
+
         # --- Aba 1: Leitor ---
         tab_leitor = tk.Frame(notebook, bg="#f0f0f0", padx=20, pady=10)
         notebook.add(tab_leitor, text="Leitor")
