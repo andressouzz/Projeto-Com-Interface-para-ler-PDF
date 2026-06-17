@@ -214,6 +214,7 @@ class LeitorDePDFGUI:
         sel_btns = [
             ("Selecionar Todas as Duplicatas", "#7f8c8d", self._selecionar_duplicatas_only),
             ("Selecionar Tudo",               "#7f8c8d", self._selecionar_tudo),
+            ("Limpar Selecao",               "#7f8c8d", self._limpar_selecao),
         ]
         for texto, cor, comando in sel_btns:
             btn = tk.Button(
@@ -504,6 +505,11 @@ class LeitorDePDFGUI:
             else:
                 self._checked.discard(item)
                 self.tree_duplicatas.set(item, "sel", "\u2610")
+
+    def _limpar_selecao(self):
+        for item in self.tree_duplicatas.get_children():
+            self._checked.discard(item)
+            self.tree_duplicatas.set(item, "sel", "\u2610")
 
     def _obter_selecionados(self):
         selecao = []
