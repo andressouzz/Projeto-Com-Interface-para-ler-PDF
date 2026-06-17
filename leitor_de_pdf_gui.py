@@ -62,7 +62,7 @@ class LeitorDePDFGUI:
         self._tab_btn_leitor = tk.Button(
             tab_bar, text="Leitor",
             font=("Segoe UI", 10, "bold"),
-            bg="#4472C4", fg="white",
+            bg="#000080", fg="white",
             relief="sunken", bd=1,
             cursor="hand2",
             command=lambda: self._selecionar_aba("leitor"),
@@ -72,7 +72,7 @@ class LeitorDePDFGUI:
         self._tab_btn_duplicatas = tk.Button(
             tab_bar, text="Notas Duplicadas",
             font=("Segoe UI", 10, "bold"),
-            bg="#ED7D31", fg="white",
+            bg="#D35400", fg="white",
             relief="flat", bd=1,
             cursor="hand2",
             command=lambda: self._selecionar_aba("duplicatas"),
@@ -205,29 +205,54 @@ class LeitorDePDFGUI:
         # --- Aba 2: Notas Duplicadas ---
         self.tab_duplicatas = tk.Frame(self._tab_content, bg="#f0f0f0", padx=20, pady=10)
 
+        self._checked = set()
+
+        # Botões de seleção
+        sel_frame = tk.Frame(self.tab_duplicatas, bg="#f0f0f0", pady=5)
+        sel_frame.pack(fill="x")
+
+        sel_btns = [
+            ("Selecionar Todas as Duplicatas", "#7f8c8d", self._selecionar_duplicatas_only),
+            ("Selecionar Tudo",               "#7f8c8d", self._selecionar_tudo),
+        ]
+        for texto, cor, comando in sel_btns:
+            btn = tk.Button(
+                sel_frame,
+                text=texto,
+                font=("Segoe UI", 9),
+                bg=cor, fg="white",
+                padx=10, pady=3,
+                relief="flat", cursor="hand2",
+                command=comando,
+            )
+            btn.pack(side="left", padx=3)
+
         # Treeview para listar duplicatas
         tree_frame = tk.Frame(self.tab_duplicatas, bg="#f0f0f0")
         tree_frame.pack(fill="both", expand=True)
 
         self.tree_duplicatas = ttk.Treeview(
             tree_frame,
-            columns=("arquivo", "nf", "tipo"),
+            columns=("sel", "arquivo", "nf", "tipo"),
             show="headings",
-            selectmode="extended",
+            selectmode="none",
         )
+        self.tree_duplicatas.heading("sel", text="")
         self.tree_duplicatas.heading("arquivo", text="Arquivo")
         self.tree_duplicatas.heading("nf", text="NF")
         self.tree_duplicatas.heading("tipo", text="Tipo")
-        self.tree_duplicatas.column("arquivo", width=500, minwidth=200)
+        self.tree_duplicatas.column("sel", width=30, minwidth=30, anchor="center")
+        self.tree_duplicatas.column("arquivo", width=470, minwidth=200)
         self.tree_duplicatas.column("nf", width=80, anchor="center")
         self.tree_duplicatas.column("tipo", width=100, anchor="center")
+        self.tree_duplicatas.bind("<ButtonRelease-1>", self._toggle_check)
 
         tree_scroll = tk.Scrollbar(tree_frame, orient="vertical", command=self.tree_duplicatas.yview)
         self.tree_duplicatas.configure(yscrollcommand=tree_scroll.set)
         tree_scroll.pack(side="right", fill="y")
         self.tree_duplicatas.pack(fill="both", expand=True)
 
-        # Botões
+        # Botões de ação
         btn_dup_frame = tk.Frame(self.tab_duplicatas, bg="#f0f0f0", pady=10)
         btn_dup_frame.pack(fill="x")
 
@@ -241,12 +266,9 @@ class LeitorDePDFGUI:
                 btn_dup_frame,
                 text=texto,
                 font=("Segoe UI", 10, "bold"),
-                bg=cor,
-                fg="white",
-                padx=15,
-                pady=5,
-                relief="flat",
-                cursor="hand2",
+                bg=cor, fg="white",
+                padx=15, pady=5,
+                relief="flat", cursor="hand2",
                 command=comando,
             )
             btn.pack(side="left", padx=5)
@@ -443,6 +465,7 @@ class LeitorDePDFGUI:
 
     def _popular_treeview_duplicatas(self, duplicatas):
         self.tree_duplicatas.delete(*self.tree_duplicatas.get_children())
+        self._checked.clear()
         if not duplicatas:
             self._log("Nenhuma duplicata encontrada.")
             return
@@ -450,15 +473,44 @@ class LeitorDePDFGUI:
             paths = duplicatas[nf]
             for i, path in enumerate(paths):
                 tipo = "Principal" if i == 0 else "Duplicata"
-                self.tree_duplicatas.insert("", "end", values=(path, nf, tipo))
+                self.tree_duplicatas.insert("", "end", values=("\u2610", path, nf, tipo))
         self._log(f"{len(duplicatas)} NF(s) com duplicatas carregadas na aba.")
+
+    def _toggle_check(self, event):
+        column = self.tree_duplicatas.identify_column(event.x)
+        if column != "#1":
+            return
+        item = self.tree_duplicatas.identify_row(event.y)
+        if not item:
+            return
+        if item in self._checked:
+            self._checked.discard(item)
+            self.tree_duplicatas.set(item, "sel", "\u2610")
+        else:
+            self._checked.add(item)
+            self.tree_duplicatas.set(item, "sel", "\u2611")
+
+    def _selecionar_tudo(self):
+        for item in self.tree_duplicatas.get_children():
+            self._checked.add(item)
+            self.tree_duplicatas.set(item, "sel", "\u2611")
+
+    def _selecionar_duplicatas_only(self):
+        for item in self.tree_duplicatas.get_children():
+            tipo = self.tree_duplicatas.set(item, "tipo")
+            if tipo == "Duplicata":
+                self._checked.add(item)
+                self.tree_duplicatas.set(item, "sel", "\u2611")
+            else:
+                self._checked.discard(item)
+                self.tree_duplicatas.set(item, "sel", "\u2610")
 
     def _obter_selecionados(self):
         selecao = []
-        for item_id in self.tree_duplicatas.selection():
+        for item_id in self._checked:
             valores = self.tree_duplicatas.item(item_id, "values")
-            if len(valores) >= 1:
-                selecao.append(valores[0])
+            if len(valores) >= 2:
+                selecao.append(valores[1])
         return selecao
 
     def _excluir_duplicatas(self):
@@ -476,8 +528,9 @@ class LeitorDePDFGUI:
                 excluidos += 1
             except Exception as e:
                 self._log(f"Erro ao excluir {path}: {e}")
-        for item_id in self.tree_duplicatas.selection():
+        for item_id in list(self._checked):
             self.tree_duplicatas.delete(item_id)
+        self._checked.clear()
         self._log(f"{excluidos} arquivo(s) excluido(s).")
         messagebox.showinfo("Concluido", f"{excluidos} arquivo(s) excluido(s).")
 
@@ -498,8 +551,9 @@ class LeitorDePDFGUI:
                 movidos += 1
             except Exception as e:
                 self._log(f"Erro ao mover {path}: {e}")
-        for item_id in self.tree_duplicatas.selection():
+        for item_id in list(self._checked):
             self.tree_duplicatas.delete(item_id)
+        self._checked.clear()
         self._log(f"{movidos} arquivo(s) movido(s) para {destino}.")
         messagebox.showinfo("Concluido", f"{movidos} arquivo(s) movido(s).")
 
