@@ -59,12 +59,6 @@ class LeitorDePDFGUI:
         notebook = ttk.Notebook(self.window)
         notebook.pack(fill="both", expand=True, padx=10, pady=5)
 
-        # Estilo para cor da aba Notas Duplicadas
-        style = ttk.Style()
-        style.theme_use("vista")
-        style.configure("Laranja.TNotebook.Tab", background="#ED7D31")
-        style.map("Laranja.TNotebook.Tab", background=[("selected", "#ED7D31")])
-
         # --- Aba 1: Leitor ---
         tab_leitor = tk.Frame(notebook, bg="#f0f0f0", padx=20, pady=10)
         notebook.add(tab_leitor, text="Leitor")
@@ -187,7 +181,6 @@ class LeitorDePDFGUI:
         # --- Aba 2: Notas Duplicadas ---
         tab_duplicatas = tk.Frame(notebook, bg="#f0f0f0", padx=20, pady=10)
         notebook.add(tab_duplicatas, text="Notas Duplicadas")
-        notebook.tab(1, style="Laranja.TNotebook.Tab")
 
         # Treeview para listar duplicatas
         tree_frame = tk.Frame(tab_duplicatas, bg="#f0f0f0")
