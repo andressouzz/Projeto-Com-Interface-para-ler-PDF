@@ -32,85 +32,143 @@ class LeitordePDF:
         self.excel_path = f"Leitura das Notas Fiscais - {datetime.now():%Y-%m-%d %Hh%M}.xlsx"
         self.console = Console()
     
-    def _validar_nf_hardware(self, numero_nf):
+    def _identificar_tipo_nf(self, numero_nf):
         if not numero_nf:
-            return False
-        return (
-            (len(numero_nf) == 5 and numero_nf[0] in ('7', '8'))
-            or (len(numero_nf) == 8 and numero_nf[0] == '2')
-        )
+            return None
+        if (len(numero_nf) == 5 and numero_nf[0] in ('7', '8')) or \
+           (len(numero_nf) == 8 and numero_nf[0] == '2'):
+            return "Hardware"
+        if (len(numero_nf) == 6 and numero_nf[0] in ('6', '7', '8', '9')) or \
+           (len(numero_nf) == 7 and numero_nf[0] == '1'):
+            return "Software"
+        return None
 
     def extrair_numero_nf(self, texto):
         """
         Extrai o número da nota fiscal do texto.
-        Procura por padrões como "Nº", "NF-e", "Nota Fiscal" seguido de números.
+        Suporta hardware (Nº 000074734) e software (NFS-e, Número:).
         """
-        # Padrões comuns para nota fiscal
+        candidatos = []
+
+        # Padrões comuns: Nº, NF-e, Nota Fiscal etc.
         padoes = [
-            r'Nº\s+(\d+)',  # Nº 000074734
-            r'N[oº]\s+(\d+)',  # No ou Nº seguido de número
-            r'NF-?[e]?\s+(\d+)',  # NF-e ou NFe
-            r'Nota\s+Fiscal\s+(\d+)',  # Nota Fiscal
-            r'NF\s*[#:-]?\s*(\d+)',  # NF com separadores
+            r'Nº\s+(\d+)',
+            r'N[oº]\s+(\d+)',
+            r'NF-?[e]?\s+(\d+)',
+            r'Nota\s+Fiscal\s+(\d+)',
+            r'NF\s*[#:-]?\s*(\d+)',
         ]
-        
         for padrao in padoes:
-            match = re.search(padrao, texto, re.IGNORECASE)
-            if match:
-                numero = match.group(1)
-                # Remove zeros a esquerda
-                numero_limpo = str(int(numero))
-                return numero_limpo
-        
-        return None
+            for m in re.finditer(padrao, texto, re.IGNORECASE):
+                candidatos.append(m.group(1))
+
+        # Software: "Nmero da NFS-e\n1021539" - específico, prioridade máxima
+        match = re.search(r'N.mero\s+da\s+NFS[-\s]e\s*(\d+)', texto, re.DOTALL)
+        if match:
+            return str(int(match.group(1)))
+
+        # Software: "Nmero: 601146" ou "NMERO DA NOTA\n750645"
+        for m in re.finditer(r'N.mero.{0,40}?(\d{5,})', texto, re.DOTALL | re.IGNORECASE):
+            candidatos.append(m.group(1))
+
+        # Filtra: limpa zeros à esquerda, descarta números curtos
+        limpos = []
+        for num in candidatos:
+            try:
+                limpo = str(int(num))
+                if len(limpo) >= 5:
+                    limpos.append(limpo)
+            except (ValueError, TypeError):
+                continue
+
+        if not limpos:
+            return None
+
+        # Retorna o mais longo (maior chance de ser o NF real)
+        return max(limpos, key=len)
     
     def extrair_cliente(self, texto):
-        """
-        Extrai o nome do cliente/razão social da nota fiscal.
-        Procura por "NOME/RAZÃO SOCIAL" seguido do nome do cliente.
-        """
-        padrao = r'NOME/RAZ[AÃ]O\s+SOCIAL\s*(.+?)\s*C\.\s*N\.\s*P\.\s*J\.'
-        match = re.search(padrao, texto, re.IGNORECASE)
-        if match:
-            return match.group(1).strip()
+        # Hardware: NOME/RAZÃO SOCIAL
+        m = re.search(r'NOME/RAZ[AÃ]O\s+SOCIAL\s*(.+?)\s*C\.\s*N\.\s*P\.\s*J\.', texto, re.IGNORECASE)
+        if m:
+            return m.group(1).strip()
+        # Software: busca "CAIXA ECONOMICA FEDERAL" (presente em todos os formatos)
+        m = re.search(r'CAIXA\s+ECON[OÔ]MICA\s+FEDERAL', texto, re.IGNORECASE)
+        if m:
+            return m.group(0).strip()
         return None
 
     def extrair_data_emissao(self, texto):
-        """
-        Extrai a data de emissão do bloco "DATA DA EMISSÃO" (formato DD.MM.YYYY).
-        O PDF pode vir com ou sem espaços entre o rótulo e a data (ex: DATADAEMISSÃO20.08.2025).
-        Retorna no formato DD/MM/YYYY.
-        """
-        padrao = r'DATA\s*DA\s*EMISS[AÃ]O\s*(\d{2})\.(\d{2})\.(\d{4})'
-        match = re.search(padrao, texto, re.IGNORECASE)
-        if match:
-            dia, mes, ano = match.groups()
-            return f"{dia}/{mes}/{ano}"
-        
+        # Hardware: DATA DA EMISSÃO DD.MM.YYYY
+        m = re.search(r'DATA\s*DA\s*EMISS[AÃ]O\s*(\d{2})\.(\d{2})\.(\d{4})', texto, re.IGNORECASE)
+        if m:
+            return f"{m.group(1)}/{m.group(2)}/{m.group(3)}"
+        # Software Format A: Data e Hora da emissão da NFS-e\nDD/MM/YYYY
+        m = re.search(r'[Dd]ata\s+e\s+[Hh]ora\s+da\s+emiss[ãa]o\s+da\s+NFS[-\s]e\s*(\d{2})/(\d{2})/(\d{4})', texto, re.DOTALL)
+        if m:
+            return f"{m.group(1)}/{m.group(2)}/{m.group(3)}"
+        # Software Format B: Data Emissão:\nDD/MM/YYYY
+        m = re.search(r'Data\s+Emiss[ãa]o:\s*(\d{2})/(\d{2})/(\d{4})', texto, re.IGNORECASE)
+        if m:
+            return f"{m.group(1)}/{m.group(2)}/{m.group(3)}"
+        # Software Format C: DATA DE EMISSÃO\nDD/MM/YYYY
+        m = re.search(r'DATA\s+DE\s+EMISS[ÃA]O\s*(\d{2})/(\d{2})/(\d{4})', texto)
+        if m:
+            return f"{m.group(1)}/{m.group(2)}/{m.group(3)}"
+        # Serviço: Data de Emissão: DD/MM/YYYY
+        m = re.search(r'Data\s+de\s+Emiss[ãa]o:\s*(\d{2})/(\d{2})/(\d{4})', texto, re.IGNORECASE)
+        if m:
+            return f"{m.group(1)}/{m.group(2)}/{m.group(3)}"
+        # Generic: DD/MM/YYYY near "emiss" keyword
+        m = re.search(r'[Ee]miss[ãa]o[^d]*?(\d{2})/(\d{2})/(\d{4})', texto)
+        if m:
+            return f"{m.group(1)}/{m.group(2)}/{m.group(3)}"
         return None
     
     def extrair_uf_destino(self, texto):
-        """
-        Extrai a UF de destino da nota fiscal.
-        Procura por "FONE/FAX UF" seguido da sigla do estado.
-        """
-        padrao = r'FONE/FAX\s+UF\s*([A-Z]{2})'
-        match = re.search(padrao, texto, re.IGNORECASE)
-        if match:
-            return match.group(1)
-        
+        # Hardware: FONE/FAX UF
+        m = re.search(r'FONE/FAX\s+UF\s*([A-Z]{2})', texto, re.IGNORECASE)
+        if m:
+            return m.group(1)
+        # Software Format B/D: UF:\nXX (DADOS DO TOMADOR section)
+        m = re.search(r'UF[:\s]*\n\s*([A-Z]{2})\b', texto)
+        if m and m.group(1) in self.UFS_BRASIL:
+            return m.group(1)
+        # Software: "CIDADE/UF" pattern (e.g., JARAGUA DO SUL/SC)
+        m = re.search(r'([A-Za-zÀ-ÿ\s]+)/(AC|AL|AP|AM|BA|CE|DF|ES|GO|MA|MT|MS|MG|PA|PB|PR|PE|PI|RJ|RN|RS|RO|RR|SC|SP|SE|TO)\b', texto)
+        if m:
+            return m.group(2)
+        # Software: UF: XX (inline)
+        m = re.search(r'\bUF:[ \t]*([A-Z]{2})\b', texto)
+        if m and m.group(1) in self.UFS_BRASIL:
+            return m.group(1)
         return None
     
     def extrair_valor_total(self, texto):
-        """
-        Extrai o valor total da nota fiscal.
-        Procura por "VALOR TOTAL DA NOTA" seguido do valor em formato brasileiro.
-        """
-        padrao = r'VALOR\s+TOTAL\s+DA\s*NOTA\s*([\d.]+,\d+)'
-        match = re.search(padrao, texto, re.IGNORECASE)
-        if match:
-            return match.group(1)
-        
+        # Hardware: VALOR TOTAL DA NOTA
+        m = re.search(r'VALOR\s+TOTAL\s+DA\s*NOTA\s*([\d.]+,\d+)', texto, re.IGNORECASE)
+        if m:
+            return m.group(1)
+        # Software Format B: VALOR LÍQUIDO DA NOTA
+        m = re.search(r'VALOR\s+L[IÍ]QUIDO\s+DA\s+NOTA\s*R?\$?\s*([\d.]+,\d+)', texto, re.IGNORECASE)
+        if m:
+            return m.group(1)
+        # Software Format C: VALOR LÍQUIDO: R$ ...
+        m = re.search(r'VALOR\s+L[IÍ]QUIDO[:\s]+\s*R?\$?\s*([\d.]+,\d+)', texto, re.IGNORECASE)
+        if m:
+            return m.group(1)
+        # Software Format C: VALOR DOS SERVIÇOS: R$ ...
+        m = re.search(r'VALOR\s+DOS\s+SERVI[ÇC]OS[:\s]+\s*R?\$?\s*([\d.]+,\d+)', texto, re.IGNORECASE)
+        if m:
+            return m.group(1)
+        # Software Format A: Valor do Serviço (first occurrence)
+        m = re.search(r'Valor\s+do\s+SERVI[ÇC]O\s*R?\$?\s*([\d.]+,\d+)', texto, re.IGNORECASE)
+        if m:
+            return m.group(1)
+        # Serviço: VALOR TOTAL DA NOTA (com quebra)
+        m = re.search(r'VALOR\s+TOTAL\s+DA\s+NOTA\s*R?\$?\s*([\d.]+,\d+)', texto, re.IGNORECASE)
+        if m:
+            return m.group(1)
         return None
     
     def extrair_cgc(self, texto):
@@ -127,7 +185,7 @@ class LeitordePDF:
     def _texto_endereco_entrega(self, texto):
         """Extrai o texto do campo Endereço Entrega (informações complementares)."""
         matches = list(re.finditer(
-            r'endereço\s+(?:de\s+)?entrega\s*:\s*(.+?)(?=\s*-?\s*Contrato\s|\s*-?\s*Conta\s+banc[aá]ria|$)',
+            r'endere[cç]o\s+(?:de\s+)?entrega\s*:\s*(.+?)(?=\s*-?\s*Contrato\s|\s*-?\s*Conta\s+banc[aá]ria|$)',
             texto,
             re.IGNORECASE | re.DOTALL,
         ))
@@ -170,6 +228,15 @@ class LeitordePDF:
             else:
                 break
         return fim
+
+    @staticmethod
+    def _formatar_cep(texto):
+        if not texto or str(texto).strip() in ('', 'N/A', '#N/A'):
+            return "N/A"
+        digits = re.sub(r'\D', '', str(texto))
+        if len(digits) == 8:
+            return f"{digits[:5]}-{digits[5:]}"
+        return str(texto)
 
     def _parsear_endereco_entrega(self, texto):
         """
@@ -288,6 +355,44 @@ class LeitordePDF:
 
         return produtos
 
+    def extrair_produtos_software(self, texto):
+        """Extrai produtos de PDFs de software (licenças/serviços com descrição e quantidade)."""
+        produtos = []
+
+        # Pattern: DESCRICAO DA LICENCA/SERVICO: <desc> - QUANTIDADE: <N>
+        padrao = r'(?:DESCRI[CÇ][AÃ]O\s+DA\s+LICEN[CÇ]A/SERVIC[OA]|Descri[cç][aã]o\s+da\s+licen[cç]a/servi[cç]o)\s*:\s*(.+?)\s*-\s*(?:QUANTIDADE|Quantidade)[:\s]*(\d+)'
+        for m in re.finditer(padrao, texto, re.IGNORECASE | re.DOTALL):
+            desc = re.sub(r'\s+', ' ', m.group(1)).strip()[:80]
+            qtd = m.group(2)
+            if desc:
+                produtos.append({
+                    'codigo': 'N/A',
+                    'descricao': desc,
+                    'quantidade': qtd,
+                })
+
+        # Pattern: ITEM N - QUANTIDADE (N) DESCRIÇÃO (Format B)
+        if not produtos:
+            padrao_item = r'ITEM\s+\d+\s*[-:]?\s*QUANTIDADE\s*\((\d+)\)\s*(.+?)(?=\s*(?:\n|DOC\s+FATURAMENTO|ENQUADRAMENTO|CGC|$))'
+            for m in re.finditer(padrao_item, texto, re.IGNORECASE | re.DOTALL):
+                desc = re.sub(r'\s+', ' ', m.group(2)).strip()[:80]
+                qtd = m.group(1)
+                if desc:
+                    produtos.append({
+                        'codigo': 'N/A',
+                        'descricao': desc,
+                        'quantidade': qtd,
+                    })
+
+        return produtos
+
+    def extrair_ciaus(self, texto):
+        """Extrai CIAUS do texto da nota fiscal (presente em software)."""
+        m = re.search(r'CIAUS\s+([A-Z]{2,})', texto)
+        if m:
+            return m.group(1).strip()
+        return None
+
     def extrair_produtos_consolidados(self, texto):
         """
         Extrai produtos do texto completo e consolida por código SAP.
@@ -316,7 +421,7 @@ class LeitordePDF:
                     texto += pagina.extract_text()
                 return texto
         except Exception as e:
-            print(f"❌ Erro ao ler {caminho_pdf}: {e}")
+            print(f" Erro ao ler {caminho_pdf}: {e}")
             return ""
 
     def contar_paginas(self, caminho_pdf):
@@ -326,12 +431,12 @@ class LeitordePDF:
                 leitor = PdfReader(arquivo)
                 return len(leitor.pages)
         except Exception as e:
-            print(f"❌ Erro ao contar páginas de {caminho_pdf}: {e}")
+            print(f" Erro ao contar páginas de {caminho_pdf}: {e}")
             return 0
     
     def exibir_preview_planilha(self):
         """Exibe um preview da planilha no terminal usando tabela formatada."""
-        table = Table(title="📊 PREVIEW DA PLANILHA", style="cyan")
+        table = Table(title=" PREVIEW DA PLANILHA", style="cyan")
         
         table.add_column("Arquivo", justify="left", style="blue", width=22)
         table.add_column("NF", justify="center", style="blue", width=12)
@@ -380,33 +485,45 @@ class LeitordePDF:
         
         self.console.print(table)
     
-    def processar_pdfs(self, diretorio="."):
-        """Processa todos os PDFs em um diretório e subdiretórios."""
-        path = Path(diretorio)
-        arquivos_pdf = sorted(path.rglob("*.pdf"))
-        
+    def processar_pdfs(self, diretorios=None):
+        """Processa todos os PDFs em um ou mais diretórios (e subdiretórios)."""
+        if diretorios is None:
+            diretorios = ["."]
+        if isinstance(diretorios, str):
+            diretorios = [diretorios]
+
+        arquivos_pdf = []
+        for d in diretorios:
+            path = Path(d)
+            if not path.is_dir():
+                print(f"  Diretório não encontrado: {d}")
+                continue
+            arquivos_pdf.extend(sorted(path.rglob("*.pdf")))
+
         if not arquivos_pdf:
-            print(f"⚠️  Nenhum PDF encontrado em {diretorio}")
+            print("  Nenhum PDF encontrado nos diretórios especificados")
             return
-        
+
         nfs_processadas = set()
-        
-        print(f"📄 Encontrados {len(arquivos_pdf)} arquivos PDF")
-        
+
+        print(f" Encontrados {len(arquivos_pdf)} arquivos PDF")
+
         for caminho_pdf in arquivos_pdf:
-            nome_arquivo = str(caminho_pdf.relative_to(path))
-            print(f"\n📖 Processando: {nome_arquivo}")
-            
+            nome_arquivo = str(caminho_pdf)
+            print(f"\n Processando: {nome_arquivo}")
+
             texto = self.ler_pdf(caminho_pdf)
             qtde_paginas = self.contar_paginas(caminho_pdf)
             if not texto:
                 continue
-            
+
             numero_nf = self.extrair_numero_nf(texto)
-            
-            # Pula NFs que não são hardware
-            if numero_nf and not self._validar_nf_hardware(numero_nf):
-                print(f"   ⏭️  NF {numero_nf} não é nota de hardware (pulando)")
+
+            tipo_nf = self._identificar_tipo_nf(numero_nf) if numero_nf else None
+
+            # Pula NFs que não são hardware nem software
+            if numero_nf and not tipo_nf:
+                print(f"   NF {numero_nf} não reconhecida (pulando)")
                 continue
 
             # Rastreia caminhos para relatório de duplicatas
@@ -417,45 +534,50 @@ class LeitordePDF:
 
             # Pula duplicatas da mesma NF (ex: backup em subpastas)
             if numero_nf and numero_nf in nfs_processadas:
-                print(f"   ⏭️  NF {numero_nf} já processada (pulando duplicata)")
+                print(f"   NF {numero_nf} já processada (pulando duplicata)")
                 continue
             if numero_nf:
                 nfs_processadas.add(numero_nf)
-            
+
             cliente = self.extrair_cliente(texto)
             data_emissao = self.extrair_data_emissao(texto)
             uf_destino = self.extrair_uf_destino(texto)
             valor_total = self.extrair_valor_total(texto)
 
-            produtos = self.extrair_produtos_consolidados(texto)
-            
+            # Extrai produtos conforme o tipo
+            if tipo_nf == "Software":
+                produtos = self.extrair_produtos_software(texto)
+            else:
+                produtos = self.extrair_produtos_consolidados(texto)
+
             # Extrai informações complementares
             cgc = self.extrair_cgc(texto)
+            ciaus = self.extrair_ciaus(texto) if tipo_nf == "Software" else None
             endereco = self.extrair_endereco_instalacao(texto)
             endereco_dados = self.extrair_bairro_cidade_cep(texto)
-            
+
             if numero_nf:
-                print(f"   ✓ NF encontrada: {numero_nf}")
+                print(f"    NF encontrada: {numero_nf}")
                 if data_emissao:
-                    print(f"   ✓ Data de emissão: {data_emissao}")
+                    print(f"    Data de emissão: {data_emissao}")
                 else:
-                    print(f"   ⚠️  Data de emissão não encontrada")
+                    print(f"     Data de emissão não encontrada")
                 if uf_destino:
-                    print(f"   ✓ UF de destino: {uf_destino}")
+                    print(f"    UF de destino: {uf_destino}")
                 else:
-                    print(f"   ⚠️  UF de destino não encontrada")
+                    print(f"     UF de destino não encontrada")
                 if valor_total:
-                    print(f"   ✓ Valor total: R$ {valor_total}")
+                    print(f"    Valor total: R$ {valor_total}")
                 else:
-                    print(f"   ⚠️  Valor total não encontrado")
+                    print(f"     Valor total não encontrado")
                 
-                print(f"   ✓ Produtos encontrados: {len(produtos)}")
+                print(f"    Produtos encontrados: {len(produtos)}")
                 
                 # Extrai informações complementares
                 if cgc:
-                    print(f"   ✓ CGC: {cgc}")
+                    print(f"    CGC: {cgc}")
                 if endereco:
-                    print(f"   ✓ Endereço: {endereco}")
+                    print(f"    Endereço: {endereco}")
                 
                 # Se houver produtos, cria uma linha para cada produto
                 if produtos:
@@ -463,7 +585,7 @@ class LeitordePDF:
                         self.dados_nf.append({
                             'arquivo': nome_arquivo,
                             'numero_nf': numero_nf,
-                            'tipo_nota_fiscal': "Hardware",
+                            'tipo_nota_fiscal': tipo_nf,
                             'qtde_paginas': qtde_paginas,
                             'cliente': cliente or "N/A",
                             'data_emissao': data_emissao or "N/A",
@@ -473,6 +595,7 @@ class LeitordePDF:
                             'descricao_material': produto['descricao'],
                             'quantidade': produto['quantidade'],
                             'cgc': cgc or "N/A",
+                            'ciaus': ciaus or "N/A",
                             'endereco_instalacao': endereco or "N/A",
                             'bairro': endereco_dados['bairro'],
                             'cidade': endereco_dados['cidade'],
@@ -483,7 +606,7 @@ class LeitordePDF:
                         self.dados_nf.append({
                             'arquivo': nome_arquivo,
                             'numero_nf': numero_nf,
-                            'tipo_nota_fiscal': "Hardware",
+                            'tipo_nota_fiscal': tipo_nf,
                             'qtde_paginas': qtde_paginas,
                             'cliente': cliente or "N/A",
                             'data_emissao': data_emissao or "N/A",
@@ -493,18 +616,19 @@ class LeitordePDF:
                             'descricao_material': "N/A",
                             'quantidade': "0",
                             'cgc': cgc or "N/A",
+                            'ciaus': ciaus or "N/A",
                             'endereco_instalacao': endereco or "N/A",
                             'bairro': endereco_dados['bairro'],
                             'cidade': endereco_dados['cidade'],
                             'cep': endereco_dados['cep']
                         })
             else:
-                print(f"   ⚠️  NF não encontrada neste documento")
+                print(f"     NF não encontrada neste documento")
         
         # Relatório de duplicatas
         duplicatas = {nf: paths for nf, paths in self._nf_para_arquivos.items() if len(paths) > 1}
         if duplicatas:
-            print(f"\n📁 Arquivos duplicados encontrados: {sum(len(v) for v in duplicatas.values())} ocorrências de {len(duplicatas)} NF(s)")
+            print(f"\n Arquivos duplicados encontrados: {sum(len(v) for v in duplicatas.values())} ocorrências de {len(duplicatas)} NF(s)")
             print(f"   Detalhes na aba 'Duplicatas' da planilha")
     
     def criar_aba_duplicatas(self, wb):
@@ -551,6 +675,8 @@ class LeitordePDF:
                 ws.cell(row=linha, column=coluna).border = borda_celula
 
         ws.auto_filter.ref = f"A1:B{row - 1}"
+        ws.freeze_panes = 'A2'
+        ws.sheet_view.tabColor = "ED7D31"
 
     def _valor_para_float(self, valor):
         """Converte valor monetário brasileiro (ex: 6.784,16) para float."""
@@ -714,8 +840,8 @@ class LeitordePDF:
             ws[f'Q{idx}'].font = fonte_dados
             ws[f'Q{idx}'].alignment = alignment_centralizado
             
-            # CEP
-            ws[f'R{idx}'] = dado['cep']
+            # CEP (formatado como 00000-000)
+            ws[f'R{idx}'] = self._formatar_cep(dado['cep'])
             ws[f'R{idx}'].font = fonte_dados
             ws[f'R{idx}'].alignment = alignment_centralizado
         
@@ -734,6 +860,8 @@ class LeitordePDF:
                 ws.cell(row=linha, column=coluna).border = borda_celula
 
         ws.auto_filter.ref = f"A1:R{ultima_linha}"
+        ws.freeze_panes = 'A2'
+        ws.sheet_view.tabColor = "4472C4"
 
         # Aba de duplicatas
         self.criar_aba_duplicatas(wb)
@@ -741,9 +869,9 @@ class LeitordePDF:
         # Salva a planilha
         try:
             wb.save(self.excel_path)
-            print(f"\n✅ Planilha criada com sucesso: {self.excel_path}")
+            print(f"\n Planilha criada com sucesso: {self.excel_path}")
         except Exception as e:
-            print(f"❌ Erro ao salvar planilha: {e}")
+            print(f" Erro ao salvar planilha: {e}")
     
     def _recarregar_dados_cruzamento(self):
         """Recarrega CGC, CIAUS e Field do Excel após o cruzamento para atualizar self.dados_nf."""
@@ -769,38 +897,38 @@ class LeitordePDF:
                     dado['field_responsavel'] = str(val)
         wb.close()
 
-    def executar(self, diretorio=".", caminho_cruzamento=None):
+    def executar(self, diretorios=None, caminho_cruzamento=None):
         """Executa o fluxo completo de leitura, geração da planilha e cruzamento."""
         print("=" * 50)
-        print("🔍 LEITOR DE PDF - Notas Fiscais")
+        print(" LEITOR DE PDF - Notas Fiscais")
         print("=" * 50)
         
-        self.processar_pdfs(diretorio)
+        self.processar_pdfs(diretorios)
         
         if self.dados_nf:
-            print(f"\n📊 Total de NFs extraídas: {len(self.dados_nf)}\n")
+            print(f"\n Total de NFs extraídas: {len(self.dados_nf)}\n")
             self.criar_planilha_excel()
             
             # Etapa de cruzamento
             if caminho_cruzamento:
                 print("\n" + "=" * 50)
-                print("🔗 Iniciando cruzamento de dados...")
+                print(" Iniciando cruzamento de dados...")
                 print("=" * 50)
                 try:
                     CruzamentoDados.executar(
                         self.excel_path,
                         caminho_cruzamento,
                     )
-                    print("\n✅ Cruzamento de dados concluído!")
+                    print("\n Cruzamento de dados concluído!")
                     print("   Colunas adicionadas: CGC, CIAUS, Field Responsável")
                 except Exception as e:
-                    print(f"\n⚠️  Erro no cruzamento: {e}")
+                    print(f"\n  Erro no cruzamento: {e}")
                 finally:
                     self._recarregar_dados_cruzamento()
             
             self.exibir_preview_planilha()
         else:
-            print("\n⚠️  Nenhuma nota fiscal foi encontrada nos PDFs.")
+            print("\n  Nenhuma nota fiscal foi encontrada nos PDFs.")
 
 
 class CruzamentoDados:
@@ -864,6 +992,15 @@ class CruzamentoDados:
         if not texto:
             return ""
         return re.sub(r'\D', '', str(texto))
+
+    @staticmethod
+    def _formatar_cep(texto):
+        if not texto or str(texto).strip() in ('', 'N/A', '#N/A'):
+            return "N/A"
+        digits = re.sub(r'\D', '', str(texto))
+        if len(digits) == 8:
+            return f"{digits[:5]}-{digits[5:]}"
+        return str(texto)
 
     @staticmethod
     def _encontrar_coluna(headers, padroes):
@@ -945,6 +1082,8 @@ class CruzamentoDados:
                 raise ValueError(f"Coluna '{col}' nao encontrada na planilha gerada. Cabecalhos: {headers_gerado}")
 
         ref_por_cidade = {}
+        ref_por_cgc = {}
+        ref_por_cep = {}
         idx_cgc_unid = cols_base['cgc_unidade']
         idx_ciaus = cols_base.get('ciaus')
         idx_field = cols_base.get('field')
@@ -980,6 +1119,18 @@ class CruzamentoDados:
                 ref_por_cidade[chave_cidade] = []
             ref_por_cidade[chave_cidade].append(registro)
 
+            # Também indexa por CGC para lookup direto
+            if cgc_int not in ref_por_cgc:
+                ref_por_cgc[cgc_int] = registro
+
+            # Indexa por prefixo CEP (5, 4 e 3 dígitos) para fallback progressivo
+            for cep_len in (5, 4, 3):
+                if len(cep) >= cep_len:
+                    cep_prefix = cep[:cep_len]
+                    if cep_prefix not in ref_por_cep:
+                        ref_por_cep[cep_prefix] = []
+                    ref_por_cep[cep_prefix].append(registro)
+
         if not ref_por_cidade:
             raise ValueError("Nenhuma linha com CGC Unidade valido na aba Base.")
 
@@ -997,6 +1148,7 @@ class CruzamentoDados:
         total_linhas = ws.max_row - 1
         substituidos_cgc = 0
         preenchidos_ciaus_field = 0
+        preenchidos_endereco_cgc = 0
 
         cache_grupo = {}
 
@@ -1029,7 +1181,15 @@ class CruzamentoDados:
                     melhor_dados = ref
 
             if melhor_dados and melhor_score >= 0.15:
-                if cgc_atual is None or str(cgc_atual).strip() in ('N/A', '', '0'):
+                cgc_precisa_substituir = (cgc_atual is None or str(cgc_atual).strip() in ('N/A', '', '0'))
+                if not cgc_precisa_substituir:
+                    try:
+                        cgc_int = int(float(str(cgc_atual).replace(',', '.')))
+                        if cgc_int not in ref_por_cgc:
+                            cgc_precisa_substituir = True
+                    except (ValueError, TypeError, OverflowError):
+                        cgc_precisa_substituir = True
+                if cgc_precisa_substituir:
                     ws.cell(row_idx, idx_cgc + 1).value = melhor_dados['cgc']
                     substituidos_cgc += 1
 
@@ -1043,9 +1203,87 @@ class CruzamentoDados:
                     ws.cell(row_idx, idx_field + 1).font = fonte_dados
                     ws.cell(row_idx, idx_field + 1).alignment = alignment_centralizado
 
+            # Fallback por CEP: se não achou por endereço, tenta por prefixo progressivo do CEP
+            if not (melhor_dados and melhor_score >= 0.15) and cep_linha and len(cep_linha) >= 5:
+                melhor_cep_dados = None
+                melhor_cep_score = 0.0
+                for cep_len in (5, 4, 3):
+                    cep_prefix = cep_linha[:cep_len]
+                    candidatos_cep = ref_por_cep.get(cep_prefix, [])
+                    if not candidatos_cep:
+                        continue
+                    for cand in candidatos_cep:
+                        s = cls._score_match(linha_atual, cand, cls.PESOS)
+                        if s > melhor_cep_score:
+                            melhor_cep_score = s
+                            melhor_cep_dados = cand
+                    if melhor_cep_dados and melhor_cep_score >= 0.15:
+                        break
+                if melhor_cep_dados:
+                    cgc_precisa_substituir = (cgc_atual is None or str(cgc_atual).strip() in ('N/A', '', '0'))
+                    if not cgc_precisa_substituir:
+                        try:
+                            cgc_int = int(float(str(cgc_atual).replace(',', '.')))
+                            if cgc_int not in ref_por_cgc:
+                                cgc_precisa_substituir = True
+                        except (ValueError, TypeError, OverflowError):
+                            cgc_precisa_substituir = True
+                    if cgc_precisa_substituir:
+                        ws.cell(row_idx, idx_cgc + 1).value = melhor_cep_dados['cgc']
+                        substituidos_cgc += 1
+                    if idx_ciaus is not None and melhor_cep_dados['ciaus']:
+                        ws.cell(row_idx, idx_ciaus + 1).value = melhor_cep_dados['ciaus']
+                        ws.cell(row_idx, idx_ciaus + 1).font = fonte_dados
+                        ws.cell(row_idx, idx_ciaus + 1).alignment = alignment_centralizado
+                        preenchidos_ciaus_field += 1
+                    if idx_field is not None and melhor_cep_dados['field']:
+                        ws.cell(row_idx, idx_field + 1).value = melhor_cep_dados['field']
+                        ws.cell(row_idx, idx_field + 1).font = fonte_dados
+                        ws.cell(row_idx, idx_field + 1).alignment = alignment_centralizado
+
+        # Segundo passe: busca por CGC para preencher endereço/bairro/cidade/CEP faltantes
+        for row_idx in range(2, ws.max_row + 1):
+            cgc_val = ws.cell(row_idx, idx_cgc + 1).value
+            if cgc_val is None or str(cgc_val).strip() in ('', 'N/A', '0'):
+                continue
+            try:
+                cgc_int = int(float(str(cgc_val).replace(',', '.')))
+            except (ValueError, TypeError, OverflowError):
+                continue
+
+            base_row = ref_por_cgc.get(cgc_int)
+            if base_row is None:
+                continue
+
+            cell_end = ws.cell(row_idx, idx_end + 1)
+            if cell_end.value is None or str(cell_end.value).strip() in ('', 'N/A'):
+                cell_end.value = base_row['endereco'].upper()
+                cell_end.font = fonte_dados
+                preenchidos_endereco_cgc += 1
+
+            cell_bai = ws.cell(row_idx, idx_bai + 1)
+            if cell_bai.value is None or str(cell_bai.value).strip() in ('', 'N/A'):
+                cell_bai.value = base_row['bairro'].upper()
+                cell_bai.font = fonte_dados
+                preenchidos_endereco_cgc += 1
+
+            cell_cid = ws.cell(row_idx, idx_cid + 1)
+            if cell_cid.value is None or str(cell_cid.value).strip() in ('', 'N/A'):
+                cell_cid.value = base_row['cidade'].upper()
+                cell_cid.font = fonte_dados
+                preenchidos_endereco_cgc += 1
+
+            cell_cep = ws.cell(row_idx, idx_cep + 1)
+            if cell_cep.value is None or str(cell_cep.value).strip() in ('', 'N/A'):
+                cell_cep.value = cls._formatar_cep(base_row['cep'])
+                cell_cep.font = fonte_dados
+                cell_cep.alignment = alignment_centralizado
+                preenchidos_endereco_cgc += 1
+
         wb.save(caminho_excel_gerado)
         print(f"\n   Cruzamento concluido: {substituidos_cgc} CGC(s) preenchido(s), "
-              f"{preenchidos_ciaus_field} linha(s) com CIAUS/Field preenchidos")
+              f"{preenchidos_ciaus_field} linha(s) com CIAUS/Field preenchidos, "
+              f"{preenchidos_endereco_cgc} campo(s) de endereço preenchidos por CGC")
         return True
 
 
@@ -1057,7 +1295,14 @@ if __name__ == "__main__":
     base_files = sorted(Path(".").glob("Base do Projeto SDLAN CEF*.xlsx"))
     caminho_cruzamento = str(base_files[0]) if base_files else None
     if caminho_cruzamento:
-        print(f"📎 Planilha Base encontrada: {base_files[0].name}")
+        print(f" Planilha Base encontrada: {base_files[0].name}")
     
-    # Processa PDFs no diretório atual e faz cruzamento se houver Base
-    leitor.executar(caminho_cruzamento=caminho_cruzamento)
+    # Procura pela pasta Notas de Software (se existir)
+    sw_dir = Path("Notas de Software")
+    diretorios = ["."]
+    if sw_dir.is_dir():
+        print(f" Pasta 'Notas de Software' encontrada")
+        diretorios.append(str(sw_dir))
+
+    # Processa PDFs e faz cruzamento se houver Base
+    leitor.executar(diretorios=diretorios, caminho_cruzamento=caminho_cruzamento)
