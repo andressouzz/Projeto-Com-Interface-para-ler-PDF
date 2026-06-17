@@ -291,8 +291,15 @@ class LeitorDePDFGUI:
 
     def _processar(self):
         try:
-            dirs = [self.dir_path.get()]
-            pdfs = sorted(Path(self.dir_path.get()).rglob("*.pdf"))
+            base_dir = self.dir_path.get()
+            dirs = [base_dir]
+            base = Path(base_dir)
+            # Adiciona subdiretórios separadamente (como faz o CLI) para detectar duplicatas
+            for subdir in sorted(base.iterdir()):
+                if subdir.is_dir() and not subdir.name.startswith('.'):
+                    if list(subdir.rglob("*.pdf")):
+                        dirs.append(str(subdir))
+            pdfs = sorted(base.rglob("*.pdf"))
             self._total_pdfs = len(pdfs)
             self._nf_counter = 0
             self._total_nfs = 0
