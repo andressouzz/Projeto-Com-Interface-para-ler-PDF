@@ -296,10 +296,15 @@ class LeitorDePDFGUI:
                     )
                     self._log("\n✅ Cruzamento de dados concluído!")
                     self._log(f"   Colunas adicionadas: CGC, CIAUS, Field Responsável")
+                    leitor._recarregar_dados_cruzamento()
+                    self._log(f"\n📊 Total de NFs após cruzamento: {len(leitor.dados_nf)}")
                 except Exception as e:
                     self._log(f"\n⚠️  Erro no cruzamento: {e}")
 
             sys.stdout = sys.__stdout__
+
+            self._exibir_preview_console(leitor)
+
             self._finalizar()
 
         except Exception as e:
@@ -327,6 +332,37 @@ class LeitorDePDFGUI:
         self.progress["value"] = valor
         self.lbl_status.configure(text=texto)
         self.window.update_idletasks()
+
+    def _exibir_preview_console(self, leitor):
+        if not leitor.dados_nf:
+            return
+        self._log("\n" + "=" * 80)
+        self._log("📊 PREVIEW FINAL DA PLANILHA")
+        self._log("=" * 80)
+        header = (
+            f"{'Arquivo':20} | {'NF':>8} | {'Tipo':10} | "
+            f"{'Cliente':20} | {'Data':10} | {'UF':3} | "
+            f"{'Valor':>10} | {'SAP':12} | {'CGC':>8} | {'Field':10}"
+        )
+        self._log(header)
+        self._log("-" * 80)
+        for dado in leitor.dados_nf:
+            cgc = dado.get('cgc', 'N/A')
+            field = dado.get('field_responsavel', 'N/A')
+            self._log(
+                f"{dado.get('arquivo','')[:18]:20} | "
+                f"{dado['numero_nf']:>8} | "
+                f"{dado.get('tipo_nota_fiscal','')[:8]:10} | "
+                f"{dado['cliente'][:18]:20} | "
+                f"{dado['data_emissao']:10} | "
+                f"{dado['uf_destino']:3} | "
+                f"R$ {dado['valor_total']:>7} | "
+                f"{dado['codigo_sap']:12} | "
+                f"{str(cgc)[:8]:>8} | "
+                f"{str(field)[:8]:10}"
+            )
+        self._log("=" * 80)
+        self._log(f"Total: {len(leitor.dados_nf)} linha(s)")
 
     def _finalizar(self, erro=False):
         self.window.after(0, lambda: self._ui_finalizar(erro))

@@ -27,10 +27,19 @@ class LeitordePDF:
     
     def __init__(self):
         self.dados_nf = []
+        self._nf_para_arquivos = {}
         from datetime import datetime
         self.excel_path = f"Leitura das Notas Fiscais - {datetime.now():%Y-%m-%d %Hh%M}.xlsx"
         self.console = Console()
     
+    def _validar_nf_hardware(self, numero_nf):
+        if not numero_nf:
+            return False
+        return (
+            (len(numero_nf) == 5 and numero_nf[0] in ('7', '8'))
+            or (len(numero_nf) == 8 and numero_nf[0] == '2')
+        )
+
     def extrair_numero_nf(self, texto):
         """
         Extrai o número da nota fiscal do texto.
@@ -230,12 +239,15 @@ class LeitordePDF:
         if not inicio:
             return texto
         resto = texto[inicio.start():]
-        fim = re.search(
+        matches = list(re.finditer(
             r'RECEBEMOS\s+DE|DADOS\s+ADICIONAIS|INFORMAÇÕES\s+COMPLEMENTARES',
             resto,
             re.IGNORECASE,
-        )
-        return resto[: fim.start()] if fim else resto
+        ))
+        if matches:
+            fim = matches[-1]
+            return resto[: fim.start()]
+        return resto
 
     def _limpar_descricao_produto(self, trecho):
         """Remove NCM, série e dados fiscais; mantém a descrição do material."""
@@ -321,37 +333,45 @@ class LeitordePDF:
         """Exibe um preview da planilha no terminal usando tabela formatada."""
         table = Table(title="📊 PREVIEW DA PLANILHA", style="cyan")
         
-        table.add_column("Número da NF", justify="center", style="blue", width=12)
-        table.add_column("Qtde Páginas", justify="center", style="blue", width=12)
+        table.add_column("Arquivo", justify="left", style="blue", width=22)
+        table.add_column("NF", justify="center", style="blue", width=12)
+        table.add_column("Tipo", justify="center", style="blue", width=10)
+        table.add_column("Págs", justify="center", style="blue", width=5)
         table.add_column("Cliente", justify="left", style="blue", width=22)
         table.add_column("Data", justify="center", style="blue", width=12)
         table.add_column("UF", justify="center", style="blue", width=5)
         table.add_column("Valor", justify="right", style="blue", width=12)
-        table.add_column("Código SAP", justify="center", style="blue", width=12)
+        table.add_column("SAP", justify="center", style="blue", width=12)
         table.add_column("Descrição", justify="left", style="blue", width=20)
-        table.add_column("Qtde.", justify="center", style="blue", width=6)
-        table.add_column("CGC", justify="center", style="blue", width=8)
+        table.add_column("Qtde", justify="center", style="blue", width=6)
+        table.add_column("CGC", justify="center", style="blue", width=10)
+        table.add_column("CIAUS", justify="center", style="blue", width=10)
+        table.add_column("Field", justify="center", style="blue", width=10)
         table.add_column("Endereço", justify="left", style="blue", width=20)
         table.add_column("Bairro", justify="center", style="blue", width=12)
-        table.add_column("Cidade", justify="center", style="blue", width=12)
+        table.add_column("Cidade", justify="center", style="blue", width=14)
         table.add_column("CEP", justify="center", style="blue", width=10)
         
         for dado in self.dados_nf:
-            valor_formatado = f"R$ {dado['valor_total']}"
-            descricao_curta = dado['descricao_material'][:20] + "..." if len(dado['descricao_material']) > 20 else dado['descricao_material']
-            endereco_curto = dado['endereco_instalacao'][:20] + "..." if len(dado['endereco_instalacao']) > 20 else dado['endereco_instalacao']
+            arquivo_curto = dado['arquivo'][:20] + "..." if len(dado['arquivo']) > 20 else dado['arquivo']
+            descricao_curta = dado['descricao_material'][:18] + "..." if len(dado['descricao_material']) > 18 else dado['descricao_material']
+            endereco_curto = dado['endereco_instalacao'][:18] + "..." if len(dado['endereco_instalacao']) > 18 else dado['endereco_instalacao']
             
             table.add_row(
+                arquivo_curto,
                 str(dado['numero_nf']),
+                str(dado['tipo_nota_fiscal']),
                 str(dado['qtde_paginas']),
                 str(dado['cliente']),
                 str(dado['data_emissao']),
                 str(dado['uf_destino']),
-                valor_formatado,
+                f"R$ {dado['valor_total']}",
                 str(dado['codigo_sap']),
                 descricao_curta,
                 str(dado['quantidade']),
                 str(dado['cgc']),
+                str(dado.get('ciaus', 'N/A')),
+                str(dado.get('field_responsavel', 'N/A')),
                 endereco_curto,
                 str(dado['bairro']),
                 str(dado['cidade']),
@@ -384,6 +404,17 @@ class LeitordePDF:
             
             numero_nf = self.extrair_numero_nf(texto)
             
+            # Pula NFs que não são hardware
+            if numero_nf and not self._validar_nf_hardware(numero_nf):
+                print(f"   ⏭️  NF {numero_nf} não é nota de hardware (pulando)")
+                continue
+
+            # Rastreia caminhos para relatório de duplicatas
+            if numero_nf:
+                if numero_nf not in self._nf_para_arquivos:
+                    self._nf_para_arquivos[numero_nf] = []
+                self._nf_para_arquivos[numero_nf].append(nome_arquivo)
+
             # Pula duplicatas da mesma NF (ex: backup em subpastas)
             if numero_nf and numero_nf in nfs_processadas:
                 print(f"   ⏭️  NF {numero_nf} já processada (pulando duplicata)")
@@ -396,10 +427,7 @@ class LeitordePDF:
             uf_destino = self.extrair_uf_destino(texto)
             valor_total = self.extrair_valor_total(texto)
 
-            if qtde_paginas > 1:
-                produtos = self.extrair_produtos_consolidados(texto)
-            else:
-                produtos = self.extrair_produtos(texto)
+            produtos = self.extrair_produtos_consolidados(texto)
             
             # Extrai informações complementares
             cgc = self.extrair_cgc(texto)
@@ -435,6 +463,7 @@ class LeitordePDF:
                         self.dados_nf.append({
                             'arquivo': nome_arquivo,
                             'numero_nf': numero_nf,
+                            'tipo_nota_fiscal': "Hardware",
                             'qtde_paginas': qtde_paginas,
                             'cliente': cliente or "N/A",
                             'data_emissao': data_emissao or "N/A",
@@ -451,26 +480,78 @@ class LeitordePDF:
                         })
                 else:
                     # Se não houver produtos, cria apenas com os dados da NF
-                    self.dados_nf.append({
-                        'arquivo': nome_arquivo,
-                        'numero_nf': numero_nf,
-                        'qtde_paginas': qtde_paginas,
-                        'cliente': cliente or "N/A",
-                        'data_emissao': data_emissao or "N/A",
-                        'uf_destino': uf_destino or "N/A",
-                        'valor_total': valor_total or "N/A",
-                        'codigo_sap': "N/A",
-                        'descricao_material': "N/A",
-                        'quantidade': "0",
-                        'cgc': cgc or "N/A",
-                        'endereco_instalacao': endereco or "N/A",
-                        'bairro': endereco_dados['bairro'],
-                        'cidade': endereco_dados['cidade'],
-                        'cep': endereco_dados['cep']
-                    })
+                        self.dados_nf.append({
+                            'arquivo': nome_arquivo,
+                            'numero_nf': numero_nf,
+                            'tipo_nota_fiscal': "Hardware",
+                            'qtde_paginas': qtde_paginas,
+                            'cliente': cliente or "N/A",
+                            'data_emissao': data_emissao or "N/A",
+                            'uf_destino': uf_destino or "N/A",
+                            'valor_total': valor_total or "N/A",
+                            'codigo_sap': "N/A",
+                            'descricao_material': "N/A",
+                            'quantidade': "0",
+                            'cgc': cgc or "N/A",
+                            'endereco_instalacao': endereco or "N/A",
+                            'bairro': endereco_dados['bairro'],
+                            'cidade': endereco_dados['cidade'],
+                            'cep': endereco_dados['cep']
+                        })
             else:
                 print(f"   ⚠️  NF não encontrada neste documento")
+        
+        # Relatório de duplicatas
+        duplicatas = {nf: paths for nf, paths in self._nf_para_arquivos.items() if len(paths) > 1}
+        if duplicatas:
+            print(f"\n📁 Arquivos duplicados encontrados: {sum(len(v) for v in duplicatas.values())} ocorrências de {len(duplicatas)} NF(s)")
+            print(f"   Detalhes na aba 'Duplicatas' da planilha")
     
+    def criar_aba_duplicatas(self, wb):
+        """Adiciona uma aba 'Duplicatas' com arquivos repetidos (mesma NF em múltiplos caminhos)."""
+        duplicatas = {nf: paths for nf, paths in self._nf_para_arquivos.items() if len(paths) > 1}
+        if not duplicatas:
+            return
+
+        ws = wb.create_sheet("Duplicatas")
+
+        fill_cinza = PatternFill(start_color="C0C0C0", end_color="C0C0C0", fill_type="solid")
+        fonte_azul = Font(color="000080", bold=True, size=11)
+        fonte_dados = Font(color="000080", size=10)
+        align_center = Alignment(horizontal="center", vertical="center")
+
+        ws.column_dimensions['A'].width = 15
+        ws.column_dimensions['B'].width = 50
+
+        headers = ["Número da NF", "Caminhos dos Arquivos"]
+        for col, h in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col)
+            cell.value = h
+            cell.fill = fill_cinza
+            cell.font = fonte_azul
+            cell.alignment = align_center
+
+        row = 2
+        for nf in sorted(duplicatas.keys()):
+            for path in duplicatas[nf]:
+                ws.cell(row=row, column=1, value=int(nf)).font = fonte_dados
+                ws.cell(row=row, column=1).alignment = align_center
+                ws.cell(row=row, column=2, value=path).font = fonte_dados
+                row += 1
+
+        ws.sheet_view.showGridLines = False
+        borda_celula = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin'),
+        )
+        for linha in range(1, row):
+            for coluna in range(1, len(headers) + 1):
+                ws.cell(row=linha, column=coluna).border = borda_celula
+
+        ws.auto_filter.ref = f"A1:B{row - 1}"
+
     def _valor_para_float(self, valor):
         """Converte valor monetário brasileiro (ex: 6.784,16) para float."""
         if not valor or valor == "N/A":
@@ -488,22 +569,24 @@ class LeitordePDF:
         ws.title = "Notas Fiscais"
         
         # Define largura das colunas
-        ws.column_dimensions['A'].width = 15
+        ws.column_dimensions['A'].width = 30
         ws.column_dimensions['B'].width = 15
-        ws.column_dimensions['C'].width = 25
+        ws.column_dimensions['C'].width = 18
         ws.column_dimensions['D'].width = 15
-        ws.column_dimensions['E'].width = 12
-        ws.column_dimensions['F'].width = 22
-        ws.column_dimensions['G'].width = 15
-        ws.column_dimensions['H'].width = 35
-        ws.column_dimensions['I'].width = 12
-        ws.column_dimensions['J'].width = 15
-        ws.column_dimensions['K'].width = 15
-        ws.column_dimensions['L'].width = 20
-        ws.column_dimensions['M'].width = 30
-        ws.column_dimensions['N'].width = 15
-        ws.column_dimensions['O'].width = 15
-        ws.column_dimensions['P'].width = 12
+        ws.column_dimensions['E'].width = 25
+        ws.column_dimensions['F'].width = 15
+        ws.column_dimensions['G'].width = 12
+        ws.column_dimensions['H'].width = 22
+        ws.column_dimensions['I'].width = 15
+        ws.column_dimensions['J'].width = 35
+        ws.column_dimensions['K'].width = 12
+        ws.column_dimensions['L'].width = 15
+        ws.column_dimensions['M'].width = 15
+        ws.column_dimensions['N'].width = 20
+        ws.column_dimensions['O'].width = 30
+        ws.column_dimensions['P'].width = 15
+        ws.column_dimensions['Q'].width = 15
+        ws.column_dimensions['R'].width = 12
         
         # Estilo do cabeçalho: fundo cinza e texto azul marinho
         fill_cinza = PatternFill(start_color="C0C0C0", end_color="C0C0C0", fill_type="solid")
@@ -512,7 +595,7 @@ class LeitordePDF:
         alignment_esquerda = Alignment(horizontal="left", vertical="center")
         
         # Adiciona cabeçalhos
-        headers = ["Número da NF", "Qtde Páginas PDF", "Cliente", "Data de Emissão", "UF de Destino", 
+        headers = ["Nome Original do Arquivo", "Número da NF", "Tipo de Nota Fiscal", "Qtde Páginas PDF", "Cliente", "Data de Emissão", "UF de Destino", 
                    "Valor Total da NF", "Código SAP", "Descrição do Material", "Quantidade", 
                    "CGC", "CIAUS", "Field Responsável", "Endereço de Instalação", "Bairro", "Cidade", "CEP"]
         
@@ -528,36 +611,46 @@ class LeitordePDF:
         alignment_direita = Alignment(horizontal="right", vertical="center")
         
         for idx, dado in enumerate(self.dados_nf, start=2):
-            # Número da NF
-            try:
-                ws[f'A{idx}'] = int(dado['numero_nf'])
-            except (ValueError, TypeError):
-                ws[f'A{idx}'] = dado['numero_nf']
+            # Nome Original do Arquivo
+            ws[f'A{idx}'] = dado['arquivo']
             ws[f'A{idx}'].font = fonte_dados
             ws[f'A{idx}'].alignment = alignment_centralizado
             
-            # Qtde Páginas PDF
-            ws[f'B{idx}'] = dado['qtde_paginas']
+            # Número da NF
+            try:
+                ws[f'B{idx}'] = int(dado['numero_nf'])
+            except (ValueError, TypeError):
+                ws[f'B{idx}'] = dado['numero_nf']
             ws[f'B{idx}'].font = fonte_dados
             ws[f'B{idx}'].alignment = alignment_centralizado
             
-            # Cliente
-            ws[f'C{idx}'] = dado['cliente']
+            # Tipo de Nota Fiscal
+            ws[f'C{idx}'] = dado['tipo_nota_fiscal']
             ws[f'C{idx}'].font = fonte_dados
             ws[f'C{idx}'].alignment = alignment_centralizado
             
-            # Data de Emissão
-            ws[f'D{idx}'] = dado['data_emissao']
+            # Qtde Páginas PDF
+            ws[f'D{idx}'] = dado['qtde_paginas']
             ws[f'D{idx}'].font = fonte_dados
             ws[f'D{idx}'].alignment = alignment_centralizado
             
-            # UF de Destino
-            ws[f'E{idx}'] = dado['uf_destino']
+            # Cliente
+            ws[f'E{idx}'] = dado['cliente']
             ws[f'E{idx}'].font = fonte_dados
             ws[f'E{idx}'].alignment = alignment_centralizado
             
+            # Data de Emissão
+            ws[f'F{idx}'] = dado['data_emissao']
+            ws[f'F{idx}'].font = fonte_dados
+            ws[f'F{idx}'].alignment = alignment_centralizado
+            
+            # UF de Destino
+            ws[f'G{idx}'] = dado['uf_destino']
+            ws[f'G{idx}'].font = fonte_dados
+            ws[f'G{idx}'].alignment = alignment_centralizado
+            
             # Valor Total (formatação Contábil do Excel)
-            celula_valor = ws[f'F{idx}']
+            celula_valor = ws[f'H{idx}']
             valor_num = self._valor_para_float(dado['valor_total'])
             if valor_num is not None:
                 celula_valor.value = round(valor_num, 2)
@@ -568,63 +661,63 @@ class LeitordePDF:
             celula_valor.alignment = alignment_direita
             
             # Código SAP
-            ws[f'G{idx}'] = dado['codigo_sap']
-            ws[f'G{idx}'].font = fonte_dados
-            ws[f'G{idx}'].alignment = alignment_centralizado
+            ws[f'I{idx}'] = dado['codigo_sap']
+            ws[f'I{idx}'].font = fonte_dados
+            ws[f'I{idx}'].alignment = alignment_centralizado
             
             # Descrição do Material
-            ws[f'H{idx}'] = dado['descricao_material']
-            ws[f'H{idx}'].font = fonte_dados
-            ws[f'H{idx}'].alignment = alignment_esquerda
+            ws[f'J{idx}'] = dado['descricao_material']
+            ws[f'J{idx}'].font = fonte_dados
+            ws[f'J{idx}'].alignment = alignment_esquerda
             
             # Quantidade
             try:
-                ws[f'I{idx}'] = int(dado['quantidade'])
+                ws[f'K{idx}'] = int(dado['quantidade'])
             except (ValueError, TypeError):
-                ws[f'I{idx}'] = dado['quantidade']
-            ws[f'I{idx}'].font = fonte_dados
-            ws[f'I{idx}'].alignment = alignment_centralizado
+                ws[f'K{idx}'] = dado['quantidade']
+            ws[f'K{idx}'].font = fonte_dados
+            ws[f'K{idx}'].alignment = alignment_centralizado
             
             # CGC
             if dado['cgc'] != "N/A":
                 try:
-                    ws[f'J{idx}'] = int(dado['cgc'])
+                    ws[f'L{idx}'] = int(dado['cgc'])
                 except (ValueError, TypeError):
-                    ws[f'J{idx}'] = dado['cgc']
+                    ws[f'L{idx}'] = dado['cgc']
             else:
-                ws[f'J{idx}'] = "N/A"
-            ws[f'J{idx}'].font = fonte_dados
-            ws[f'J{idx}'].alignment = alignment_centralizado
-            
-            # CIAUS
-            ws[f'K{idx}'] = dado.get('ciaus', "N/A")
-            ws[f'K{idx}'].font = fonte_dados
-            ws[f'K{idx}'].alignment = alignment_centralizado
-            
-            # Field Responsável
-            ws[f'L{idx}'] = dado.get('field_responsavel', "N/A")
+                ws[f'L{idx}'] = "N/A"
             ws[f'L{idx}'].font = fonte_dados
             ws[f'L{idx}'].alignment = alignment_centralizado
             
-            # Endereço de Instalação
-            ws[f'M{idx}'] = dado['endereco_instalacao']
+            # CIAUS
+            ws[f'M{idx}'] = dado.get('ciaus', "N/A")
             ws[f'M{idx}'].font = fonte_dados
             ws[f'M{idx}'].alignment = alignment_centralizado
             
-            # Bairro
-            ws[f'N{idx}'] = dado['bairro']
+            # Field Responsável
+            ws[f'N{idx}'] = dado.get('field_responsavel', "N/A")
             ws[f'N{idx}'].font = fonte_dados
             ws[f'N{idx}'].alignment = alignment_centralizado
             
-            # Cidade
-            ws[f'O{idx}'] = dado['cidade']
+            # Endereço de Instalação
+            ws[f'O{idx}'] = dado['endereco_instalacao']
             ws[f'O{idx}'].font = fonte_dados
             ws[f'O{idx}'].alignment = alignment_centralizado
             
-            # CEP
-            ws[f'P{idx}'] = dado['cep']
+            # Bairro
+            ws[f'P{idx}'] = dado['bairro']
             ws[f'P{idx}'].font = fonte_dados
             ws[f'P{idx}'].alignment = alignment_centralizado
+            
+            # Cidade
+            ws[f'Q{idx}'] = dado['cidade']
+            ws[f'Q{idx}'].font = fonte_dados
+            ws[f'Q{idx}'].alignment = alignment_centralizado
+            
+            # CEP
+            ws[f'R{idx}'] = dado['cep']
+            ws[f'R{idx}'].font = fonte_dados
+            ws[f'R{idx}'].alignment = alignment_centralizado
         
         # Grade só na área com conteúdo; restante da planilha sem linhas
         ws.sheet_view.showGridLines = False
@@ -639,7 +732,12 @@ class LeitordePDF:
         for linha in range(1, ultima_linha + 1):
             for coluna in range(1, ultima_coluna + 1):
                 ws.cell(row=linha, column=coluna).border = borda_celula
-        
+
+        ws.auto_filter.ref = f"A1:R{ultima_linha}"
+
+        # Aba de duplicatas
+        self.criar_aba_duplicatas(wb)
+
         # Salva a planilha
         try:
             wb.save(self.excel_path)
@@ -695,9 +793,10 @@ class LeitordePDF:
                     )
                     print("\n✅ Cruzamento de dados concluído!")
                     print("   Colunas adicionadas: CGC, CIAUS, Field Responsável")
-                    self._recarregar_dados_cruzamento()
                 except Exception as e:
                     print(f"\n⚠️  Erro no cruzamento: {e}")
+                finally:
+                    self._recarregar_dados_cruzamento()
             
             self.exibir_preview_planilha()
         else:
@@ -736,18 +835,29 @@ class CruzamentoDados:
     _RE_ACENTOS_U = re.compile(r'[ùúûü]', re.I)
     _RE_ACENTOS_C = re.compile(r'[ç]', re.I)
 
+    _ABREVIACOES = {
+        'r': 'rua', 'av': 'avenida', 'est': 'estrada', 'rod': 'rodovia',
+        'pca': 'praca', 'trav': 'travessa', 'al': 'alameda',
+    }
+
     @staticmethod
     def _normalizar(texto):
         if not texto:
             return ""
         s = str(texto)
+        # Remove pontuação (vírgula, ponto, hífen, barra, parênteses etc)
+        s = re.sub(r'[,./\-\\()\[\]{}:;!?@#&*+=_~<>"\'°]', ' ', s)
         s = CruzamentoDados._RE_ACENTOS.sub('a', s)
         s = CruzamentoDados._RE_ACENTOS_E.sub('e', s)
         s = CruzamentoDados._RE_ACENTOS_I.sub('i', s)
         s = CruzamentoDados._RE_ACENTOS_O.sub('o', s)
         s = CruzamentoDados._RE_ACENTOS_U.sub('u', s)
         s = CruzamentoDados._RE_ACENTOS_C.sub('c', s)
-        return re.sub(r'\s+', ' ', s.lower().strip())
+        s = re.sub(r'\s+', ' ', s.lower().strip())
+        # Expande abreviações comuns de endereço
+        tokens = s.split()
+        tokens = [CruzamentoDados._ABREVIACOES.get(t, t) for t in tokens]
+        return ' '.join(tokens)
 
     @staticmethod
     def _normalizar_cep(texto):
@@ -918,7 +1028,7 @@ class CruzamentoDados:
                     melhor_score = score
                     melhor_dados = ref
 
-            if melhor_dados and melhor_score >= 0.3:
+            if melhor_dados and melhor_score >= 0.15:
                 if cgc_atual is None or str(cgc_atual).strip() in ('N/A', '', '0'):
                     ws.cell(row_idx, idx_cgc + 1).value = melhor_dados['cgc']
                     substituidos_cgc += 1
