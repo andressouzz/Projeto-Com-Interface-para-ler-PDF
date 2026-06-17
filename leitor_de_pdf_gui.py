@@ -55,26 +55,39 @@ class LeitorDePDFGUI:
         )
         title.pack()
 
-        # Notebook com abas
-        notebook = ttk.Notebook(self.window)
-        notebook.pack(fill="both", expand=True, padx=10, pady=5)
+        # --- Abas customizadas (substitui ttk.Notebook) ---
+        tab_bar = tk.Frame(self.window, bg="#f0f0f0")
+        tab_bar.pack(fill="x", padx=10)
 
-        # Estilo: aba selecionada em laranja
-        style = ttk.Style()
-        try:
-            style.theme_use("vista")
-        except:
-            pass
-        style.configure("TNotebook.Tab", background="#F0F0F0")
-        style.map("TNotebook.Tab", background=[("selected", "#ED7D31")])
+        self._tab_btn_leitor = tk.Button(
+            tab_bar, text="Leitor",
+            font=("Segoe UI", 10, "bold"),
+            bg="#4472C4", fg="white",
+            relief="sunken", bd=1,
+            cursor="hand2",
+            command=lambda: self._selecionar_aba("leitor"),
+        )
+        self._tab_btn_leitor.pack(side="left", padx=(0, 1))
+
+        self._tab_btn_duplicatas = tk.Button(
+            tab_bar, text="Notas Duplicadas",
+            font=("Segoe UI", 10, "bold"),
+            bg="#ED7D31", fg="white",
+            relief="flat", bd=1,
+            cursor="hand2",
+            command=lambda: self._selecionar_aba("duplicatas"),
+        )
+        self._tab_btn_duplicatas.pack(side="left")
+
+        self._tab_content = tk.Frame(self.window, bg="#f0f0f0")
+        self._tab_content.pack(fill="both", expand=True, padx=10, pady=5)
 
         # --- Aba 1: Leitor ---
-        tab_leitor = tk.Frame(notebook, bg="#f0f0f0", padx=20, pady=10)
-        notebook.add(tab_leitor, text="Leitor")
+        self.tab_leitor = tk.Frame(self._tab_content, bg="#f0f0f0", padx=20, pady=10)
 
         # Local das Notas Fiscais
         self._criar_linha(
-            tab_leitor,
+            self.tab_leitor,
             0,
             "Local Onde as Notas Fiscais Estão Salvas",
             self.dir_path,
@@ -84,7 +97,7 @@ class LeitorDePDFGUI:
 
         # Destino do Excel
         self._criar_linha(
-            tab_leitor,
+            self.tab_leitor,
             1,
             "Salvar Planilha como",
             self.excel_path,
@@ -94,7 +107,7 @@ class LeitorDePDFGUI:
 
         # Planilha de Cruzamento
         self._criar_linha(
-            tab_leitor,
+            self.tab_leitor,
             2,
             "Planilha para Cruzamento",
             self.cruzamento_path,
@@ -103,12 +116,12 @@ class LeitorDePDFGUI:
         )
 
         # Separador
-        ttk.Separator(tab_leitor, orient="horizontal").grid(
+        ttk.Separator(self.tab_leitor, orient="horizontal").grid(
             row=3, column=0, columnspan=3, sticky="ew", pady=15
         )
 
         # Botões Executar e Abrir Planilha
-        btn_frame = tk.Frame(tab_leitor, bg="#f0f0f0")
+        btn_frame = tk.Frame(self.tab_leitor, bg="#f0f0f0")
         btn_frame.grid(row=4, column=0, columnspan=3, pady=5, sticky="ew")
         btn_frame.grid_columnconfigure(0, weight=1)
         btn_frame.grid_columnconfigure(2, weight=1)
@@ -144,12 +157,12 @@ class LeitorDePDFGUI:
 
         # Barra de progresso
         self.progress = ttk.Progressbar(
-            tab_leitor, mode="determinate", length=600
+            self.tab_leitor, mode="determinate", length=600
         )
         self.progress.grid(row=5, column=0, columnspan=3, pady=(10, 5), sticky="ew")
 
         self.lbl_status = tk.Label(
-            tab_leitor,
+            self.tab_leitor,
             text="Pronto para executar",
             font=("Segoe UI", 9),
             fg="#555555",
@@ -158,7 +171,7 @@ class LeitorDePDFGUI:
         self.lbl_status.grid(row=6, column=0, columnspan=3, pady=(0, 2))
 
         self.lbl_contagem = tk.Label(
-            tab_leitor,
+            self.tab_leitor,
             text="",
             font=("Segoe UI", 10, "bold"),
             fg="#000080",
@@ -167,10 +180,10 @@ class LeitorDePDFGUI:
         self.lbl_contagem.grid(row=7, column=0, columnspan=3, pady=(0, 5))
 
         # Console output
-        console_frame = tk.Frame(tab_leitor, bg="#f0f0f0")
+        console_frame = tk.Frame(self.tab_leitor, bg="#f0f0f0")
         console_frame.grid(row=8, column=0, columnspan=3, sticky="nsew", pady=(5, 0))
-        tab_leitor.grid_rowconfigure(8, weight=1)
-        tab_leitor.grid_columnconfigure(0, weight=1)
+        self.tab_leitor.grid_rowconfigure(8, weight=1)
+        self.tab_leitor.grid_columnconfigure(0, weight=1)
 
         self.txt_console = tk.Text(
             console_frame,
@@ -187,12 +200,13 @@ class LeitorDePDFGUI:
         scrollbar.pack(side="right", fill="y")
         self.txt_console.pack(fill="both", expand=True)
 
+        self.tab_leitor.pack(fill="both", expand=True)
+
         # --- Aba 2: Notas Duplicadas ---
-        tab_duplicatas = tk.Frame(notebook, bg="#f0f0f0", padx=20, pady=10)
-        notebook.add(tab_duplicatas, text="Notas Duplicadas")
+        self.tab_duplicatas = tk.Frame(self._tab_content, bg="#f0f0f0", padx=20, pady=10)
 
         # Treeview para listar duplicatas
-        tree_frame = tk.Frame(tab_duplicatas, bg="#f0f0f0")
+        tree_frame = tk.Frame(self.tab_duplicatas, bg="#f0f0f0")
         tree_frame.pack(fill="both", expand=True)
 
         self.tree_duplicatas = ttk.Treeview(
@@ -214,7 +228,7 @@ class LeitorDePDFGUI:
         self.tree_duplicatas.pack(fill="both", expand=True)
 
         # Botões
-        btn_dup_frame = tk.Frame(tab_duplicatas, bg="#f0f0f0", pady=10)
+        btn_dup_frame = tk.Frame(self.tab_duplicatas, bg="#f0f0f0", pady=10)
         btn_dup_frame.pack(fill="x")
 
         btns = [
@@ -236,6 +250,20 @@ class LeitorDePDFGUI:
                 command=comando,
             )
             btn.pack(side="left", padx=5)
+
+        self.tab_duplicatas.pack_forget()
+
+    def _selecionar_aba(self, nome):
+        if nome == "leitor":
+            self.tab_duplicatas.pack_forget()
+            self.tab_leitor.pack(fill="both", expand=True)
+            self._tab_btn_leitor.configure(relief="sunken")
+            self._tab_btn_duplicatas.configure(relief="flat")
+        else:
+            self.tab_leitor.pack_forget()
+            self.tab_duplicatas.pack(fill="both", expand=True)
+            self._tab_btn_leitor.configure(relief="flat")
+            self._tab_btn_duplicatas.configure(relief="sunken")
 
     def _criar_linha(self, parent, row, label_text, var, btn_text, btn_cmd):
         tk.Label(
