@@ -373,18 +373,23 @@ class LeitorDePDFGUI:
             self._finalizar(erro=True)
 
     def _carregar_duplicatas(self, leitor):
-        self.tree_duplicatas.delete(*self.tree_duplicatas.get_children())
         duplicatas = {
             nf: paths for nf, paths in leitor._nf_para_arquivos.items()
             if len(paths) > 1
         }
+        self.window.after(0, self._popular_treeview_duplicatas, duplicatas)
+
+    def _popular_treeview_duplicatas(self, duplicatas):
+        self.tree_duplicatas.delete(*self.tree_duplicatas.get_children())
         if not duplicatas:
+            self._log("Nenhuma duplicata encontrada.")
             return
         for nf in sorted(duplicatas.keys()):
             paths = duplicatas[nf]
             for i, path in enumerate(paths):
                 tipo = "Principal" if i == 0 else "Duplicata"
                 self.tree_duplicatas.insert("", "end", values=(path, nf, tipo))
+        self._log(f"{len(duplicatas)} NF(s) com duplicatas carregadas na aba.")
 
     def _obter_selecionados(self):
         selecao = []
