@@ -1297,12 +1297,5 @@ if __name__ == "__main__":
     if caminho_cruzamento:
         print(f" Planilha Base encontrada: {base_files[0].name}")
     
-    # Procura pela pasta Notas de Software (se existir)
-    sw_dir = Path("Notas de Software")
-    diretorios = ["."]
-    if sw_dir.is_dir():
-        print(f" Pasta 'Notas de Software' encontrada")
-        diretorios.append(str(sw_dir))
-
     # Processa PDFs e faz cruzamento se houver Base
-    leitor.executar(diretorios=diretorios, caminho_cruzamento=caminho_cruzamento)
+    leitor.executar(diretorios=["."], caminho_cruzamento=caminho_cruzamento)
