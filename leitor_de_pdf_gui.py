@@ -179,10 +179,42 @@ class LeitorDePDFGUI:
         )
         self.lbl_contagem.grid(row=7, column=0, columnspan=3, pady=(0, 5))
 
+        # Quadros de informação (valores totais por tipo)
+        info_frame = tk.Frame(self.tab_leitor, bg="#f0f0f0")
+        info_frame.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(5, 0))
+        info_frame.grid_columnconfigure(0, weight=1)
+        info_frame.grid_columnconfigure(1, weight=1)
+        info_frame.grid_columnconfigure(2, weight=1)
+        info_frame.grid_columnconfigure(3, weight=1)
+        self.tab_leitor.grid_columnconfigure(0, weight=1)
+
+        self._info_labels = {}
+        titulos = [
+            ("Hardware",  "#4472C4"),
+            ("Software",  "#ED7D31"),
+            ("Servico",   "#70AD47"),
+            ("Faturado",  "#000080"),
+        ]
+        for col, (titulo, cor) in enumerate(titulos):
+            card = tk.Frame(info_frame, bg="white", relief="solid", bd=1)
+            card.grid(row=0, column=col, padx=5, pady=5, sticky="ew")
+            tk.Label(
+                card, text=titulo,
+                font=("Segoe UI", 9, "bold"),
+                bg="white", fg=cor, anchor="center",
+            ).pack(fill="x", pady=(6, 0))
+            lbl_valor = tk.Label(
+                card, text="R$ 0,00",
+                font=("Segoe UI", 12, "bold"),
+                bg="white", fg="#333333", anchor="center",
+            )
+            lbl_valor.pack(fill="x", pady=(0, 6))
+            self._info_labels[titulo] = lbl_valor
+
         # Console output
         console_frame = tk.Frame(self.tab_leitor, bg="#f0f0f0")
-        console_frame.grid(row=8, column=0, columnspan=3, sticky="nsew", pady=(5, 0))
-        self.tab_leitor.grid_rowconfigure(8, weight=1)
+        console_frame.grid(row=9, column=0, columnspan=3, sticky="nsew", pady=(5, 0))
+        self.tab_leitor.grid_rowconfigure(9, weight=1)
         self.tab_leitor.grid_columnconfigure(0, weight=1)
 
         self.txt_console = tk.Text(
@@ -448,6 +480,7 @@ class LeitorDePDFGUI:
             sys.stdout = sys.__stdout__
 
             self._exibir_preview_console(leitor)
+            self.window.after(0, self._atualizar_info_boxes, leitor)
             self._carregar_duplicatas(leitor)
 
             self._finalizar()
@@ -614,6 +647,32 @@ class LeitorDePDFGUI:
         self.progress["value"] = valor
         self.lbl_status.configure(text=texto)
         self.window.update_idletasks()
+
+    def _atualizar_info_boxes(self, leitor):
+        if not leitor.dados_nf:
+            return
+        nfs = {}
+        for dado in leitor.dados_nf:
+            nf = dado['numero_nf']
+            if nf not in nfs:
+                tipo = dado.get('tipo_nota_fiscal', '')
+                raw = dado['valor_total']
+                valor = float(raw.replace('.', '').replace(',', '.'))
+                nfs[nf] = (tipo if tipo else "Servico", valor)
+        totais = {"Hardware": 0.0, "Software": 0.0, "Servico": 0.0}
+        for tipo, valor in nfs.values():
+            if tipo in totais:
+                totais[tipo] += valor
+        faturado = sum(totais.values())
+        for titulo in ("Hardware", "Software", "Servico"):
+            v = totais[titulo]
+            self._info_labels[titulo].configure(
+                text=f"R$ {v:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+            )
+        v = faturado
+        self._info_labels["Faturado"].configure(
+            text=f"R$ {v:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+        )
 
     def _exibir_preview_console(self, leitor):
         if not leitor.dados_nf:
