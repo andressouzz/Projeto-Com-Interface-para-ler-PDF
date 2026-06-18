@@ -193,7 +193,7 @@ class LeitorDePDFGUI:
             ("Hardware",  "#4472C4"),
             ("Software",  "#ED7D31"),
             ("Servico",   "#70AD47"),
-            ("Faturado",  "#000080"),
+            ("Total Faturado",   "#000080"),
         ]
         for col, (titulo, cor) in enumerate(titulos):
             card = tk.Frame(info_frame, bg="white", relief="solid", bd=1)
@@ -665,7 +665,7 @@ class LeitorDePDFGUI:
                 text=f"R$ {v:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
             )
         v = faturado
-        self._info_labels["Faturado"].configure(
+        self._info_labels["Total Faturado"].configure(
             text=f"R$ {v:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
         )
 
